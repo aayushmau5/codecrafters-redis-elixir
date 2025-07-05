@@ -37,9 +37,9 @@ defmodule Server do
   defp handle_socket(client) do
     case :gen_tcp.recv(client, 0) do
       {:ok, data} ->
-        dbg(data)
         response = handle_data(data)
         :gen_tcp.send(client, response)
+        handle_socket(client)
 
       {:error, reason} ->
         IO.puts("Error receiving data: #{reason}")
