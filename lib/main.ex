@@ -6,6 +6,7 @@ defmodule Server do
   use Application
 
   def start(_type, _args) do
+    {:ok, _pid} = Agent.start_link(fn -> %{} end, name: :redis_storage)
     Supervisor.start_link([{Task, fn -> Server.listen() end}], strategy: :one_for_one)
   end
 
@@ -52,8 +53,29 @@ defmodule Server do
       |> String.downcase()
       |> String.trim()
       |> String.split("\r\n")
+      |> dbg()
 
     handle_command(command)
+  end
+
+  defp handle_command([_, _, "set", _, key, _, value]) do
+    Agent.update(:redis_storage, fn map ->
+      Map.put(map, key, value)
+    end)
+
+    "+OK\r\n"
+  end
+
+  defp handle_command([_, _, "get", _, key]) do
+    value =
+      Agent.get(:redis_storage, fn map ->
+        Map.get(map, key)
+      end)
+
+    case value do
+      nil -> "$-1\r\n"
+      value -> "$#{String.length(value)}\r\n#{value}\r\n"
+    end
   end
 
   defp handle_command([_, _, "echo", _, message]),
