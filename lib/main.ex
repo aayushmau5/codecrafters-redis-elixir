@@ -28,7 +28,7 @@ defmodule Server do
     case :gen_tcp.accept(socket) do
       {:ok, client} ->
         Task.start(fn -> handle_socket(client) end)
-        loop_accept(client)
+        loop_accept(socket)
 
       {:error, reason} ->
         IO.puts("Error accepting connection: #{reason}")
