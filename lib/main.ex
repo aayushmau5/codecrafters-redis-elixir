@@ -20,15 +20,30 @@ defmodule Server do
     #
     # # Since the tester restarts your program quite often, setting SO_REUSEADDR
     # # ensures that we don't run into 'Address already in use' errors
-    {:ok, listener} = :gen_tcp.listen(6379, [:binary, active: false, reuseaddr: true])
-    {:ok, socket} = :gen_tcp.accept(listener)
-    pong(socket)
+    {:ok, socket} = :gen_tcp.listen(6379, [:binary, active: false, reuseaddr: true])
+    loop_accept(socket)
   end
 
-  defp pong(socket) do
-    {:ok, _data} = :gen_tcp.recv(socket, 0)
-    :gen_tcp.send(socket, "+PONG\r\n")
-    pong(socket)
+  defp loop_accept(socket) do
+    case :gen_tcp.accept(socket) do
+      {:ok, client} ->
+        Task.start(fn -> handle_socket(client) end)
+        loop_accept(client)
+
+      {:error, reason} ->
+        IO.puts("Error accepting connection: #{reason}")
+        :gen_tcp.close(socket)
+    end
+  end
+
+  defp handle_socket(client) do
+    pong(client)
+  end
+
+  defp pong(client) do
+    {:ok, _data} = :gen_tcp.recv(client, 0)
+    :gen_tcp.send(client, "+PONG\r\n")
+    pong(client)
   end
 end
 
