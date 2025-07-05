@@ -37,6 +37,7 @@ defmodule Server do
   defp handle_socket(client) do
     case :gen_tcp.recv(client, 0) do
       {:ok, data} ->
+        dbg(data)
         response = handle_data(data)
         :gen_tcp.send(client, response)
 
@@ -55,13 +56,10 @@ defmodule Server do
     handle_command(command)
   end
 
-  defp handle_command([_, _, "echo", _, message]) do
-    "$#{String.length(message)}\r\n#{message}\r\n"
-  end
+  defp handle_command([_, _, "echo", _, message]),
+    do: "$#{String.length(message)}\r\n#{message}\r\n"
 
-  defp handle_command([_, _, "ping"]) do
-    "+PONG\r\n"
-  end
+  defp handle_command([_, _, "ping"]), do: "+PONG\r\n"
 
   defp handle_command(cmd) do
     dbg(cmd)
