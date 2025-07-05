@@ -62,6 +62,11 @@ defmodule Server do
   defp handle_command([_, _, "ping"]) do
     "+PONG\r\n"
   end
+
+  defp handle_command(cmd) do
+    dbg(cmd)
+    "+NOTHING\r\n"
+  end
 end
 
 defmodule CLI do
