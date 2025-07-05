@@ -22,7 +22,13 @@ defmodule Server do
     # # ensures that we don't run into 'Address already in use' errors
     {:ok, listener} = :gen_tcp.listen(6379, [:binary, active: false, reuseaddr: true])
     {:ok, socket} = :gen_tcp.accept(listener)
+    pong(socket)
+  end
+
+  defp pong(socket) do
+    {:ok, _data} = :gen_tcp.recv(socket, 0)
     :gen_tcp.send(socket, "+PONG\r\n")
+    pong(socket)
   end
 end
 
