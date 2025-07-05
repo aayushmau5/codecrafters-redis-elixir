@@ -16,10 +16,8 @@ defmodule Server do
     # You can use print statements as follows for debugging, they'll be visible when running tests.
     IO.puts("Logs from your program will appear here!")
 
-    # Uncomment this block to pass the first stage
-    #
-    # # Since the tester restarts your program quite often, setting SO_REUSEADDR
-    # # ensures that we don't run into 'Address already in use' errors
+    # Since the tester restarts your program quite often, setting SO_REUSEADDR
+    # ensures that we don't run into 'Address already in use' errors
     {:ok, socket} = :gen_tcp.listen(6379, [:binary, active: false, reuseaddr: true])
     loop_accept(socket)
   end
@@ -37,13 +35,32 @@ defmodule Server do
   end
 
   defp handle_socket(client) do
-    pong(client)
+    case :gen_tcp.recv(client, 0) do
+      {:ok, data} ->
+        response = handle_data(data)
+        :gen_tcp.send(client, response)
+
+      {:error, reason} ->
+        IO.puts("Error receiving data: #{reason}")
+    end
   end
 
-  defp pong(client) do
-    {:ok, _data} = :gen_tcp.recv(client, 0)
-    :gen_tcp.send(client, "+PONG\r\n")
-    pong(client)
+  defp handle_data(data) do
+    command =
+      data
+      |> String.downcase()
+      |> String.trim()
+      |> String.split("\r\n")
+
+    handle_command(command)
+  end
+
+  defp handle_command([_, _, "echo", _, message]) do
+    "$#{String.length(message)}\r\n#{message}\r\n"
+  end
+
+  defp handle_command([_, _, "ping"]) do
+    "+PONG\r\n"
   end
 end
 
