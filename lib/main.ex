@@ -60,10 +60,10 @@ defmodule Server do
     do: "$#{String.length(message)}\r\n#{message}\r\n"
 
   defp handle_command([_, _, "ping"]), do: "+PONG\r\n"
+  defp handle_command([_, _, "ping", _, pong]), do: "$#{String.length(pong)}\r\n#{pong}\r\n"
 
   defp handle_command(cmd) do
-    dbg(cmd)
-    "+NOTHING\r\n"
+    cmd
   end
 end
 
