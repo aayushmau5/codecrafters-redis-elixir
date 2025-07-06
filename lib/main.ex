@@ -6,6 +6,14 @@ defmodule Server do
   use Application
 
   def start(_type, _args) do
+    {options, _, _} =
+      OptionParser.parse(System.argv(), strict: [dir: :string, dbfilename: :string])
+
+    # config
+    :ets.new(:config, [:set, :protected, :named_table])
+    :ets.insert(:config, {:dir, Keyword.get(options, :dir)})
+    :ets.insert(:config, {:dbfilename, Keyword.get(options, :dbfilename)})
+
     {:ok, _pid} = Agent.start_link(fn -> %{} end, name: :redis_storage)
     Supervisor.start_link([{Task, fn -> Server.listen() end}], strategy: :one_for_one)
   end
@@ -67,10 +75,29 @@ defmodule Server do
 
   defp handle_command([_, command | rest]) do
     case String.downcase(command) do
+      "config" -> handle_config(rest)
       "set" -> handle_set(rest)
       "get" -> handle_get(rest)
       "echo" -> handle_echo(rest)
       "ping" -> handle_ping(rest)
+    end
+  end
+
+  defp handle_config([_, command | rest]) do
+    case String.downcase(command) do
+      "get" -> config_get(rest)
+    end
+  end
+
+  defp config_get([_, conf]) do
+    case String.downcase(conf) do
+      "dir" ->
+        [dir: dir] = :ets.lookup(:config, :dir)
+        "*2\r\n$3\r\ndir\r\n$#{String.length(dir)}\r\n#{dir}\r\n"
+
+      "dbfilename" ->
+        [dbfilename: name] = :ets.lookup(:config, :dbfilename)
+        "*2\r\n$10\r\ndbfilename\r\n$#{String.length(name)}\r\n#{name}\r\n"
     end
   end
 
