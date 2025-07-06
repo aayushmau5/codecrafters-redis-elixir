@@ -50,7 +50,6 @@ defmodule Server do
   defp handle_data(data) do
     command =
       data
-      |> String.downcase()
       |> String.trim()
       |> String.split("\r\n")
       |> dbg()
@@ -58,7 +57,29 @@ defmodule Server do
     handle_command(command)
   end
 
-  defp handle_command([_, _, "set", _, key, _, value]) do
+  defp handle_command(["*" <> _len | rest]) do
+    handle_command(rest)
+  end
+
+  defp handle_command(["+" | rest]) do
+    handle_command(rest)
+  end
+
+  defp handle_command([_, command | rest]) do
+    case String.downcase(command) do
+      "set" -> handle_set(rest)
+      "get" -> handle_get(rest)
+      "echo" -> handle_echo(rest)
+      "ping" -> handle_ping(rest)
+    end
+  end
+
+  # ["$3", "foo", "$4", "bar"]
+  # ["$3", "foo", "$4", "bar", "$2", "px", "$3", "100"]
+  defp handle_set([_, key, _, value | rest]) do
+    options = handle_set_options(rest, %{})
+    value = Map.merge(%{value: value}, options)
+
     Agent.update(:redis_storage, fn map ->
       Map.put(map, key, value)
     end)
@@ -66,26 +87,60 @@ defmodule Server do
     "+OK\r\n"
   end
 
-  defp handle_command([_, _, "get", _, key]) do
+  defp handle_set_options(["$" <> _, name, "$" <> _, value | rest] = _options, map) do
+    case name do
+      "px" ->
+        map =
+          Map.merge(map, %{
+            ttl: Time.add(Time.utc_now(), String.to_integer(value), :millisecond)
+          })
+
+        handle_set_options(rest, map)
+
+      _ ->
+        map
+    end
+  end
+
+  defp handle_set_options([], map), do: map
+
+  defp handle_get([_, key]) do
     value =
       Agent.get(:redis_storage, fn map ->
         Map.get(map, key)
       end)
 
     case value do
-      nil -> "$-1\r\n"
-      value -> "$#{String.length(value)}\r\n#{value}\r\n"
+      nil ->
+        "$-1\r\n"
+
+      %{ttl: ttl, value: value} ->
+        if Time.diff(ttl, Time.utc_now(), :millisecond) > 0 do
+          "$#{String.length(value)}\r\n#{value}\r\n"
+        else
+          Agent.update(:redis_storage, fn map -> Map.delete(map, key) end)
+          "$-1\r\n"
+        end
+
+      %{value: value} ->
+        "$#{String.length(value)}\r\n#{value}\r\n"
     end
   end
 
-  defp handle_command([_, _, "echo", _, message]),
-    do: "$#{String.length(message)}\r\n#{message}\r\n"
+  defp handle_echo([_, message]) do
+    "$#{String.length(message)}\r\n#{message}\r\n"
+  end
 
-  defp handle_command([_, _, "ping"]), do: "+PONG\r\n"
-  defp handle_command([_, _, "ping", _, pong]), do: "$#{String.length(pong)}\r\n#{pong}\r\n"
+  defp handle_ping([]) do
+    "+PONG\r\n"
+  end
 
-  defp handle_command(cmd) do
-    cmd
+  defp handle_ping([_, pong]) do
+    "$#{String.length(pong)}\r\n#{pong}\r\n"
+  end
+
+  defp encode(data) when is_binary(data) do
+    "$#{String.length(data)}\r\n#{data}\r\n"
   end
 end
 
