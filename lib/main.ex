@@ -12,13 +12,17 @@ defmodule Server do
     dir = Keyword.get(options, :dir)
     dbfilename = Keyword.get(options, :dbfilename)
 
-    # config
-    :ets.new(:config, [:set, :protected, :named_table])
-    :ets.insert(:config, {:dir, dir})
-    :ets.insert(:config, {:dbfilename, dbfilename})
-
     {:ok, _pid} = Agent.start_link(fn -> %{} end, name: :redis_storage)
-    Storage.run(Path.join(dir, dbfilename), :redis_storage)
+
+    if dir != nil and dbfilename != nil do
+      # config
+      :ets.new(:config, [:set, :protected, :named_table])
+      :ets.insert(:config, {:dir, dir})
+      :ets.insert(:config, {:dbfilename, dbfilename})
+
+      Storage.run(Path.join(dir, dbfilename), :redis_storage)
+    end
+
     Supervisor.start_link([{Task, fn -> Server.listen() end}], strategy: :one_for_one)
   end
 
