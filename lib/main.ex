@@ -111,7 +111,7 @@ defmodule Server do
   defp handle_info([_, key]) do
     case key do
       "replication" ->
-        case :ets.lookup(:config, :isreplica) do
+        case :ets.lookup(:config, :is_replica) do
           [] -> "$11\r\nrole:master\r\n"
           [is_replica: true] -> "$10\r\nrole:slave\r\n"
         end
