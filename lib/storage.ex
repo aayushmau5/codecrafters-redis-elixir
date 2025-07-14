@@ -107,7 +107,12 @@ defmodule RDB.Parse do
     {value, rest} = RDB.StringEncoding.parse_string(rest)
 
     value_with_expiry =
-      if expiry_info, do: %{value: value, ttl: expiry_info}, else: %{value: value}
+      if expiry_info do
+        ttl_time = DateTime.from_unix!(expiry_info, :millisecond) |> DateTime.to_time()
+        %{value: value, ttl: ttl_time}
+      else
+        %{value: value}
+      end
 
     data_map = Map.put(map.data, key, value_with_expiry)
     map = %{map | data: data_map}

@@ -175,8 +175,6 @@ defmodule Server do
         "$-1\r\n"
 
       %{ttl: ttl, value: value} ->
-        ttl = DateTime.from_unix(ttl)
-
         if Time.diff(ttl, Time.utc_now(), :millisecond) > 0 do
           "$#{String.length(value)}\r\n#{value}\r\n"
         else
