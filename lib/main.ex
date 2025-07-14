@@ -8,12 +8,13 @@ defmodule Server do
   def start(_type, _args) do
     {options, _, _} =
       OptionParser.parse(System.argv(),
-        strict: [dir: :string, dbfilename: :string, port: :integer]
+        strict: [dir: :string, dbfilename: :string, port: :integer, replicaof: :string]
       )
 
     dir = Keyword.get(options, :dir)
     dbfilename = Keyword.get(options, :dbfilename)
     port = Keyword.get(options, :port, 6379)
+    replica = Keyword.get(options, :replicaof)
 
     :ets.new(:config, [:set, :protected, :named_table])
     :ets.insert(:config, {:port, port})
@@ -26,6 +27,12 @@ defmodule Server do
       :ets.insert(:config, {:dbfilename, dbfilename})
 
       Storage.run(Path.join(dir, dbfilename), :redis_storage)
+    end
+
+    if replica !== nil do
+      [_host, port] = String.split(replica, " ")
+      _port = String.to_integer(port)
+      :ets.insert(:config, {:is_replica, true})
     end
 
     Supervisor.start_link([{Task, fn -> Server.listen() end}], strategy: :one_for_one)
@@ -103,8 +110,14 @@ defmodule Server do
   # INFO replication
   defp handle_info([_, key]) do
     case key do
-      "replication" -> "$11\r\nrole:master\r\n"
-      _ -> return_nil()
+      "replication" ->
+        case :ets.lookup(:config, :isreplica) do
+          [] -> "$11\r\nrole:master\r\n"
+          [is_replica: true] -> "$10\r\nrole:slave\r\n"
+        end
+
+      _ ->
+        return_nil()
     end
   end
 
