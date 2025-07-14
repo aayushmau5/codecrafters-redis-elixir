@@ -9,12 +9,16 @@ defmodule Server do
     {options, _, _} =
       OptionParser.parse(System.argv(), strict: [dir: :string, dbfilename: :string])
 
+    dir = Keyword.get(options, :dir)
+    dbfilename = Keyword.get(options, :dbfilename)
+
     # config
     :ets.new(:config, [:set, :protected, :named_table])
-    :ets.insert(:config, {:dir, Keyword.get(options, :dir)})
-    :ets.insert(:config, {:dbfilename, Keyword.get(options, :dbfilename)})
+    :ets.insert(:config, {:dir, dir})
+    :ets.insert(:config, {:dbfilename, dbfilename})
 
     {:ok, _pid} = Agent.start_link(fn -> %{} end, name: :redis_storage)
+    Storage.run(Path.join(dir, dbfilename), :redis_storage)
     Supervisor.start_link([{Task, fn -> Server.listen() end}], strategy: :one_for_one)
   end
 
@@ -76,6 +80,7 @@ defmodule Server do
   defp handle_command([_, command | rest]) do
     case String.downcase(command) do
       "config" -> handle_config(rest)
+      "keys" -> handle_key(rest)
       "set" -> handle_set(rest)
       "get" -> handle_get(rest)
       "echo" -> handle_echo(rest)
@@ -98,6 +103,30 @@ defmodule Server do
       "dbfilename" ->
         [dbfilename: name] = :ets.lookup(:config, :dbfilename)
         "*2\r\n$10\r\ndbfilename\r\n$#{String.length(name)}\r\n#{name}\r\n"
+    end
+  end
+
+  defp handle_key([_, "*"]) do
+    keys =
+      Agent.get(:redis_storage, fn state ->
+        Map.keys(state)
+      end)
+
+    Enum.reduce(keys, "*#{length(keys)}\r\n", fn value, acc ->
+      acc <> "$#{String.length(value)}\r\n#{value}\r\n"
+    end)
+  end
+
+  defp handle_key([_, key]) do
+    keys =
+      Agent.get(:redis_storage, fn state ->
+        Map.keys(state)
+      end)
+
+    if Enum.member?(keys, key) do
+      "*1\r\n$#{String.length(key)}\r\n#{key}\r\n"
+    else
+      "$-1\r\n"
     end
   end
 
@@ -164,10 +193,6 @@ defmodule Server do
 
   defp handle_ping([_, pong]) do
     "$#{String.length(pong)}\r\n#{pong}\r\n"
-  end
-
-  defp encode(data) when is_binary(data) do
-    "$#{String.length(data)}\r\n#{data}\r\n"
   end
 end
 
