@@ -7,7 +7,10 @@ defmodule Storage do
 
   def read_rdb_file(path) do
     # as bitstrings
-    File.read!(path)
+    case File.read(path) do
+      {:ok, data} -> data
+      {:error, _} -> ""
+    end
   end
 
   def parse_rdb(data) do
@@ -24,6 +27,8 @@ defmodule Storage do
 end
 
 defmodule RDB.Parse do
+  def parse(""), do: {%{version: "", metadata: %{}, data: %{}}, <<>>}
+
   def parse(data) do
     data
     |> handle_header()
