@@ -152,7 +152,7 @@ defmodule Server do
       "px" ->
         map =
           Map.merge(map, %{
-            ttl: Time.add(Time.utc_now(), String.to_integer(value), :millisecond)
+            ttl: DateTime.add(DateTime.utc_now(), String.to_integer(value), :millisecond)
           })
 
         handle_set_options(rest, map)
