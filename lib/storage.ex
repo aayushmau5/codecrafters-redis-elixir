@@ -67,7 +67,7 @@ defmodule RDB.Parse do
       map
       |> Map.put(:index, db_index)
       |> Map.put(:total, total_kv)
-      |> Map.put(:expiry, expiry_kv)
+      |> Map.put(:ttl, expiry_kv)
 
     {map, rest}
   end
@@ -106,7 +106,7 @@ defmodule RDB.Parse do
     {value, rest} = RDB.StringEncoding.parse_string(rest)
 
     value_with_expiry =
-      if expiry_info, do: %{value: value, expiry: expiry_info}, else: %{value: value}
+      if expiry_info, do: %{value: value, ttl: expiry_info}, else: %{value: value}
 
     data_map = Map.put(map.data, key, value_with_expiry)
     map = %{map | data: data_map}
