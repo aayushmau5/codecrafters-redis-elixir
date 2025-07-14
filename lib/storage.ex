@@ -19,6 +19,7 @@ defmodule Storage do
 
   defp load_in_agent({map, _}, agent_name) do
     data = Map.get(map, :data)
+    dbg(data)
 
     Agent.update(agent_name, fn _ ->
       data
@@ -104,7 +105,8 @@ defmodule RDB.Parse do
     {key, rest} = RDB.StringEncoding.parse_string(rest)
     {value, rest} = RDB.StringEncoding.parse_string(rest)
 
-    value_with_expiry = if expiry_info, do: %{value: value, expiry: expiry_info}, else: value
+    value_with_expiry =
+      if expiry_info, do: %{value: value, expiry: expiry_info}, else: %{value: value}
 
     data_map = Map.put(map.data, key, value_with_expiry)
     map = %{map | data: data_map}
