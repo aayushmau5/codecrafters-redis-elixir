@@ -175,7 +175,7 @@ defmodule Server do
         "$-1\r\n"
 
       %{ttl: ttl, value: value} ->
-        if Time.diff(ttl, Time.utc_now(), :millisecond) > 0 do
+        if DateTime.diff(ttl, DateTime.utc_now(), :millisecond) > 0 do
           "$#{String.length(value)}\r\n#{value}\r\n"
         else
           Agent.update(:redis_storage, fn map -> Map.delete(map, key) end)

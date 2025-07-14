@@ -108,8 +108,8 @@ defmodule RDB.Parse do
 
     value_with_expiry =
       if expiry_info do
-        ttl_time = DateTime.from_unix!(expiry_info, :millisecond) |> DateTime.to_time()
-        %{value: value, ttl: ttl_time}
+        ttl = DateTime.from_unix!(expiry_info, :millisecond)
+        %{value: value, ttl: ttl}
       else
         %{value: value}
       end
