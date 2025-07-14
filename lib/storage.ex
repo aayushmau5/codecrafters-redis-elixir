@@ -76,9 +76,10 @@ defmodule RDB.Parse do
   def handle_data({map, <<0xFF, rest::binary>>}), do: {map, rest}
 
   def handle_data({map, <<0xFD, rest::binary>>}) do
-    <<timestamp::little-32, rest::binary>> = rest
+    <<timestamp_seconds::little-32, rest::binary>> = rest
+    timestamp_ms = timestamp_seconds * 1000
 
-    parse_key_value_with_expiry(map, rest, timestamp)
+    parse_key_value_with_expiry(map, rest, timestamp_ms)
     |> handle_data()
   end
 
