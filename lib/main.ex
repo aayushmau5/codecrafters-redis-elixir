@@ -7,10 +7,13 @@ defmodule Server do
 
   def start(_type, _args) do
     {options, _, _} =
-      OptionParser.parse(System.argv(), strict: [dir: :string, dbfilename: :string])
+      OptionParser.parse(System.argv(),
+        strict: [dir: :string, dbfilename: :string, port: :integer]
+      )
 
     dir = Keyword.get(options, :dir)
     dbfilename = Keyword.get(options, :dbfilename)
+    port = Keyword.get(options, :port, 6379)
 
     {:ok, _pid} = Agent.start_link(fn -> %{} end, name: :redis_storage)
 
@@ -19,6 +22,7 @@ defmodule Server do
       :ets.new(:config, [:set, :protected, :named_table])
       :ets.insert(:config, {:dir, dir})
       :ets.insert(:config, {:dbfilename, dbfilename})
+      :ets.insert(:config, {:port, port})
 
       Storage.run(Path.join(dir, dbfilename), :redis_storage)
     end
@@ -33,9 +37,11 @@ defmodule Server do
     # You can use print statements as follows for debugging, they'll be visible when running tests.
     IO.puts("Logs from your program will appear here!")
 
+    [port: port] = :ets.lookup(:config, :port)
+
     # Since the tester restarts your program quite often, setting SO_REUSEADDR
     # ensures that we don't run into 'Address already in use' errors
-    {:ok, socket} = :gen_tcp.listen(6379, [:binary, active: false, reuseaddr: true])
+    {:ok, socket} = :gen_tcp.listen(port, [:binary, active: false, reuseaddr: true])
     loop_accept(socket)
   end
 
