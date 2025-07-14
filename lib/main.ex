@@ -15,14 +15,15 @@ defmodule Server do
     dbfilename = Keyword.get(options, :dbfilename)
     port = Keyword.get(options, :port, 6379)
 
+    :ets.new(:config, [:set, :protected, :named_table])
+    :ets.insert(:config, {:port, port})
+
     {:ok, _pid} = Agent.start_link(fn -> %{} end, name: :redis_storage)
 
     if dir != nil and dbfilename != nil do
-      # config
-      :ets.new(:config, [:set, :protected, :named_table])
+      # db config
       :ets.insert(:config, {:dir, dir})
       :ets.insert(:config, {:dbfilename, dbfilename})
-      :ets.insert(:config, {:port, port})
 
       Storage.run(Path.join(dir, dbfilename), :redis_storage)
     end
