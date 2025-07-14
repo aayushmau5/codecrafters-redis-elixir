@@ -5,7 +5,7 @@ defmodule Storage do
     |> load_in_agent(agent_name)
   end
 
-  def read_rdb_file(path) do
+  defp read_rdb_file(path) do
     # as bitstrings
     case File.read(path) do
       {:ok, data} -> data
@@ -13,7 +13,7 @@ defmodule Storage do
     end
   end
 
-  def parse_rdb(data) do
+  defp parse_rdb(data) do
     RDB.Parse.parse(data)
   end
 
@@ -40,14 +40,14 @@ defmodule RDB.Parse do
   end
 
   # Header
-  def handle_header(<<"REDIS", version::binary-size(4), rest::binary>>) do
+  defp handle_header(<<"REDIS", version::binary-size(4), rest::binary>>) do
     {%{version: version, metadata: %{}, data: %{}}, rest}
   end
 
   # Metadata
-  def handle_metadata({map, <<0xFE, rest::binary>>}), do: {map, rest}
+  defp handle_metadata({map, <<0xFE, rest::binary>>}), do: {map, rest}
 
-  def handle_metadata({map, <<0xFA, rest::binary>>}) do
+  defp handle_metadata({map, <<0xFA, rest::binary>>}) do
     {key, rest} = RDB.StringEncoding.parse_string(rest)
     {value, rest} = RDB.StringEncoding.parse_string(rest)
     meta_map = Map.put(map.metadata, key, value)
@@ -56,7 +56,7 @@ defmodule RDB.Parse do
   end
 
   # Database
-  def handle_database({map, rest}) do
+  defp handle_database({map, rest}) do
     {db_index, rest} = RDB.SizeEncoding.parse_size_encoding(rest)
 
     <<0xFB, rest::binary>> = rest
@@ -73,9 +73,9 @@ defmodule RDB.Parse do
   end
 
   # Data
-  def handle_data({map, <<0xFF, rest::binary>>}), do: {map, rest}
+  defp handle_data({map, <<0xFF, rest::binary>>}), do: {map, rest}
 
-  def handle_data({map, <<0xFD, rest::binary>>}) do
+  defp handle_data({map, <<0xFD, rest::binary>>}) do
     <<timestamp_seconds::little-32, rest::binary>> = rest
     timestamp_ms = timestamp_seconds * 1000
 
@@ -83,19 +83,19 @@ defmodule RDB.Parse do
     |> handle_data()
   end
 
-  def handle_data({map, <<0xFC, rest::binary>>}) do
+  defp handle_data({map, <<0xFC, rest::binary>>}) do
     <<timestamp::little-64, rest::binary>> = rest
 
     parse_key_value_with_expiry(map, rest, timestamp)
     |> handle_data()
   end
 
-  def handle_data({map, rest}) do
+  defp handle_data({map, rest}) do
     parse_key_value_with_expiry(map, rest, nil)
     |> handle_data()
   end
 
-  def handle_eof({map, <<checksum::binary-size(8), rest::binary>>}) do
+  defp handle_eof({map, <<checksum::binary-size(8), rest::binary>>}) do
     map = Map.put(map, :checksum, checksum)
     {map, rest}
   end

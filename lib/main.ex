@@ -90,12 +90,21 @@ defmodule Server do
 
   defp handle_command([_, command | rest]) do
     case String.downcase(command) do
+      "info" -> handle_info(rest)
       "config" -> handle_config(rest)
       "keys" -> handle_key(rest)
       "set" -> handle_set(rest)
       "get" -> handle_get(rest)
       "echo" -> handle_echo(rest)
       "ping" -> handle_ping(rest)
+    end
+  end
+
+  # INFO replication
+  defp handle_info([_, key]) do
+    case key do
+      "replication" -> "$11\r\nrole:master\r\n"
+      _ -> return_nil()
     end
   end
 
@@ -137,7 +146,7 @@ defmodule Server do
     if Enum.member?(keys, key) do
       "*1\r\n$#{String.length(key)}\r\n#{key}\r\n"
     else
-      "$-1\r\n"
+      return_nil()
     end
   end
 
@@ -179,14 +188,14 @@ defmodule Server do
 
     case value do
       nil ->
-        "$-1\r\n"
+        return_nil()
 
       %{ttl: ttl, value: value} ->
         if DateTime.diff(ttl, DateTime.utc_now(), :millisecond) > 0 do
           "$#{String.length(value)}\r\n#{value}\r\n"
         else
           Agent.update(:redis_storage, fn map -> Map.delete(map, key) end)
-          "$-1\r\n"
+          return_nil()
         end
 
       %{value: value} ->
@@ -205,6 +214,8 @@ defmodule Server do
   defp handle_ping([_, pong]) do
     "$#{String.length(pong)}\r\n#{pong}\r\n"
   end
+
+  defp return_nil(), do: "$-1\r\n"
 end
 
 defmodule CLI do
