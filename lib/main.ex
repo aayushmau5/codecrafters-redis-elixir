@@ -30,9 +30,11 @@ defmodule Server do
     end
 
     if replica !== nil do
-      [_host, port] = String.split(replica, " ")
-      _port = String.to_integer(port)
+      [host, port] = String.split(replica, " ")
+      port = String.to_integer(port)
       :ets.insert(:config, {:is_replica, true})
+      :ets.insert(:config, {:master_host, host})
+      :ets.insert(:config, {:master_port, port})
     else
       master_repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
       master_repl_offset = 0
@@ -51,6 +53,20 @@ defmodule Server do
     IO.puts("Logs from your program will appear here!")
 
     [port: port] = :ets.lookup(:config, :port)
+
+    # Send PING command to master(if running on replica instance)
+    if replica?() do
+      [master_host: master_host] = :ets.lookup(:config, :master_host)
+      [master_port: master_port] = :ets.lookup(:config, :master_port)
+
+      {:ok, socket} =
+        :gen_tcp.connect(String.to_charlist(master_host), master_port, [:binary, active: false])
+
+      :ok = :gen_tcp.send(socket, "*1\r\n$4\r\nPING\r\n")
+      {:ok, pong} = :gen_tcp.recv(socket, 0)
+
+      "+PONG\r\n" = pong
+    end
 
     # Since the tester restarts your program quite often, setting SO_REUSEADDR
     # ensures that we don't run into 'Address already in use' errors
@@ -248,6 +264,13 @@ defmodule Server do
   end
 
   defp return_nil(), do: "$-1\r\n"
+
+  defp replica?() do
+    case :ets.lookup(:config, :is_replica) do
+      [] -> false
+      [is_replica: true] -> true
+    end
+  end
 end
 
 defmodule CLI do
