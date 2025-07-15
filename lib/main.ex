@@ -157,7 +157,8 @@ defmodule Server do
 
   # PYSNC
   defp handle_psync([_, "?", _, "-1"]) do
-    "+FULLRESYNC <REPL_ID> 0\r\n"
+    [master_repl_id: master_repl_id] = :ets.lookup(:config, :master_repl_id)
+    "+FULLRESYNC #{master_repl_id} 0\r\n"
   end
 
   # INFO replication
