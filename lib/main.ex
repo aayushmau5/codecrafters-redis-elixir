@@ -33,6 +33,11 @@ defmodule Server do
       [_host, port] = String.split(replica, " ")
       _port = String.to_integer(port)
       :ets.insert(:config, {:is_replica, true})
+    else
+      master_repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
+      master_repl_offset = 0
+      :ets.insert(:config, {:master_repl_id, master_repl_id})
+      :ets.insert(:config, {:master_repl_offset, master_repl_offset})
     end
 
     Supervisor.start_link([{Task, fn -> Server.listen() end}], strategy: :one_for_one)
@@ -112,8 +117,22 @@ defmodule Server do
     case key do
       "replication" ->
         case :ets.lookup(:config, :is_replica) do
-          [] -> "$11\r\nrole:master\r\n"
-          [is_replica: true] -> "$10\r\nrole:slave\r\n"
+          [] ->
+            [master_repl_id: master_repl_id] = :ets.lookup(:config, :master_repl_id)
+            [master_repl_offset: master_repl_offset] = :ets.lookup(:config, :master_repl_offset)
+            master_repl_id = "master_replid:#{master_repl_id}"
+            master_repl_offset = "master_repl_offset:#{master_repl_offset}"
+
+            data = """
+            role:master
+            #{master_repl_id}
+            #{master_repl_offset}
+            """
+
+            "$#{String.length(data)}\r\n#{data}\r\n"
+
+          [is_replica: true] ->
+            "$10\r\nrole:slave\r\n"
         end
 
       _ ->
