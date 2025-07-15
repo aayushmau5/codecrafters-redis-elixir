@@ -62,9 +62,11 @@ defmodule Server do
       {:ok, socket} =
         :gen_tcp.connect(String.to_charlist(master_host), master_port, [:binary, active: false])
 
+      # PING
       :ok = :gen_tcp.send(socket, "*1\r\n$4\r\nPING\r\n")
       {:ok, "+PONG\r\n"} = :gen_tcp.recv(socket, 0)
 
+      # REPLCONF listening-port <port>
       :ok =
         :gen_tcp.send(
           socket,
@@ -73,8 +75,13 @@ defmodule Server do
 
       {:ok, "+OK\r\n"} = :gen_tcp.recv(socket, 0)
 
+      # REPLCONF capa psync2
       :ok = :gen_tcp.send(socket, "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n")
       {:ok, "+OK\r\n"} = :gen_tcp.recv(socket, 0)
+
+      # PSYNC ? -1
+      :ok = :gen_tcp.send(socket, "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n")
+      {:ok, _} = :gen_tcp.recv(socket, 0)
     end
 
     # Since the tester restarts your program quite often, setting SO_REUSEADDR
@@ -128,6 +135,7 @@ defmodule Server do
   defp handle_command([_, command | rest]) do
     case String.downcase(command) do
       "replconf" -> handle_repl_conf(rest)
+      "psync" -> handle_psync(rest)
       "info" -> handle_info(rest)
       "config" -> handle_config(rest)
       "keys" -> handle_key(rest)
@@ -138,12 +146,18 @@ defmodule Server do
     end
   end
 
+  # REPLCONF
   defp handle_repl_conf([_, "listening-port", _, _port]) do
     "+OK\r\n"
   end
 
   defp handle_repl_conf([_, "capa", _, "psync2"]) do
     "+OK\r\n"
+  end
+
+  # PYSNC
+  defp handle_psync([_, "?", _, "-1"]) do
+    "+FULLRESYNC <REPL_ID> 0\r\n"
   end
 
   # INFO replication
@@ -174,6 +188,7 @@ defmodule Server do
     end
   end
 
+  # CONFIG
   defp handle_config([_, command | rest]) do
     case String.downcase(command) do
       "get" -> config_get(rest)
