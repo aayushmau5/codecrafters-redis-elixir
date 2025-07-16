@@ -20,6 +20,7 @@ defmodule Server do
     :ets.insert(:config, {:port, port})
 
     {:ok, _pid} = Agent.start_link(fn -> %{} end, name: :redis_storage)
+    {:ok, _pid} = Agent.start_link(fn -> [] end, name: :replicas)
 
     if dir != nil and dbfilename != nil do
       # db config
@@ -32,7 +33,7 @@ defmodule Server do
       Storage.run(rdb_file_path, :redis_storage)
     end
 
-    if replica !== nil do
+    if replica do
       [host, port] = String.split(replica, " ")
       port = String.to_integer(port)
       :ets.insert(:config, {:is_replica, true})
@@ -52,9 +53,6 @@ defmodule Server do
   Listen for incoming connections
   """
   def listen() do
-    # You can use print statements as follows for debugging, they'll be visible when running tests.
-    IO.puts("Logs from your program will appear here!")
-
     [port: port] = :ets.lookup(:config, :port)
 
     # Send PING command to master(if running on replica instance)
@@ -62,29 +60,18 @@ defmodule Server do
       [master_host: master_host] = :ets.lookup(:config, :master_host)
       [master_port: master_port] = :ets.lookup(:config, :master_port)
 
-      {:ok, socket} =
-        :gen_tcp.connect(String.to_charlist(master_host), master_port, [:binary, active: false])
+      Supervisor.start_link(
+        [
+          {
+            ReplicaConnection,
+            [host: master_host, port: master_port, name: ReplicaConnectionOne]
+          }
+        ],
+        strategy: :one_for_one
+      )
 
-      # PING
-      :ok = :gen_tcp.send(socket, "*1\r\n$4\r\nPING\r\n")
-      {:ok, "+PONG\r\n"} = :gen_tcp.recv(socket, 0)
-
-      # REPLCONF listening-port <port>
-      :ok =
-        :gen_tcp.send(
-          socket,
-          "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n#{port}\r\n"
-        )
-
-      {:ok, "+OK\r\n"} = :gen_tcp.recv(socket, 0)
-
-      # REPLCONF capa psync2
-      :ok = :gen_tcp.send(socket, "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n")
-      {:ok, "+OK\r\n"} = :gen_tcp.recv(socket, 0)
-
-      # PSYNC ? -1
-      :ok = :gen_tcp.send(socket, "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n")
-      {:ok, _} = :gen_tcp.recv(socket, 0)
+      ReplicaConnection.initialize(ReplicaConnectionOne)
+      ReplicaConnection.run_handler(ReplicaConnectionOne)
     end
 
     # Since the tester restarts your program quite often, setting SO_REUSEADDR
@@ -107,9 +94,25 @@ defmodule Server do
 
   defp handle_socket(client) do
     case :gen_tcp.recv(client, 0) do
-      {:ok, data} ->
+      {:ok, binary_data} ->
+        data =
+          binary_data
+          |> String.trim()
+          |> String.split("\r\n")
+
+        {command, _} = get_command(data)
+
+        if master?() and command == "psync" do
+          Agent.update(:replicas, fn clients -> [client | clients] end)
+        end
+
         response = handle_data(data)
         :gen_tcp.send(client, response)
+
+        if master?() do
+          handle_propagation(binary_data, command)
+        end
+
         handle_socket(client)
 
       {:error, reason} ->
@@ -117,35 +120,40 @@ defmodule Server do
     end
   end
 
-  defp handle_data(data) do
-    command =
-      data
-      |> String.trim()
-      |> String.split("\r\n")
-      |> dbg()
-
-    handle_command(command)
+  def handle_data(data) do
+    {command, data} = get_command(data)
+    handle_command(command, data)
   end
 
-  defp handle_command(["*" <> _len | rest]) do
-    handle_command(rest)
+  defp handle_propagation(binary_command, command) do
+    case command do
+      "set" ->
+        Agent.get(:replicas, fn clients ->
+          Enum.each(clients, fn client ->
+            :gen_tcp.send(client, binary_command) |> dbg()
+          end)
+        end)
+
+      _ ->
+        nil
+    end
   end
 
-  defp handle_command(["+" | rest]) do
-    handle_command(rest)
-  end
+  defp get_command(["*" <> _len | rest]), do: get_command(rest)
+  defp get_command(["+" | rest]), do: get_command(rest)
+  defp get_command([_, command | rest]), do: {String.downcase(command), rest}
 
-  defp handle_command([_, command | rest]) do
-    case String.downcase(command) do
-      "replconf" -> handle_repl_conf(rest)
-      "psync" -> handle_psync(rest)
-      "info" -> handle_info(rest)
-      "config" -> handle_config(rest)
-      "keys" -> handle_key(rest)
-      "set" -> handle_set(rest)
-      "get" -> handle_get(rest)
-      "echo" -> handle_echo(rest)
-      "ping" -> handle_ping(rest)
+  defp handle_command(command, data) do
+    case command do
+      "replconf" -> handle_repl_conf(data)
+      "psync" -> handle_psync(data)
+      "info" -> handle_info(data)
+      "config" -> handle_config(data)
+      "keys" -> handle_key(data)
+      "set" -> handle_set(data)
+      "get" -> handle_get(data)
+      "echo" -> handle_echo(data)
+      "ping" -> handle_ping(data)
     end
   end
 
@@ -170,8 +178,7 @@ defmodule Server do
 
     empty_rdb_bytes = File.read!(db_file_path)
 
-    "+FULLRESYNC #{master_repl_id} 0\r\n" <>
-      "$#{IO.iodata_length(empty_rdb_bytes)}\r\n#{empty_rdb_bytes}"
+    "+FULLRESYNC #{master_repl_id} 0\r\n$#{IO.iodata_length(empty_rdb_bytes)}\r\n#{empty_rdb_bytes}"
   end
 
   # INFO replication
@@ -248,15 +255,21 @@ defmodule Server do
   # ["$3", "foo", "$4", "bar"]
   # ["$3", "foo", "$4", "bar", "$2", "px", "$3", "100"]
   defp handle_set([_, key, _, value | rest]) do
-    options = handle_set_options(rest, %{})
+    {options, rest} = handle_set_options(rest, %{})
     value = Map.merge(%{value: value}, options)
 
     Agent.update(:redis_storage, fn map ->
       Map.put(map, key, value)
     end)
 
-    "+OK\r\n"
+    if rest == [] do
+      "+OK\r\n"
+    else
+      handle_data(rest)
+    end
   end
+
+  defp handle_set_options(["*" <> _ | _] = rest, map), do: {map, rest}
 
   defp handle_set_options(["$" <> _, name, "$" <> _, value | rest] = _options, map) do
     case name do
@@ -269,11 +282,11 @@ defmodule Server do
         handle_set_options(rest, map)
 
       _ ->
-        map
+        {map, rest}
     end
   end
 
-  defp handle_set_options([], map), do: map
+  defp handle_set_options([], map), do: {map, []}
 
   defp handle_get([_, key]) do
     value =
@@ -311,6 +324,8 @@ defmodule Server do
   end
 
   defp return_nil(), do: "$-1\r\n"
+
+  defp master?(), do: !replica?()
 
   defp replica?() do
     case :ets.lookup(:config, :is_replica) do
