@@ -71,7 +71,6 @@ defmodule Server do
       )
 
       ReplicaConnection.initialize(ReplicaConnectionOne)
-      ReplicaConnection.run_handler(ReplicaConnectionOne)
     end
 
     # Since the tester restarts your program quite often, setting SO_REUSEADDR
@@ -99,6 +98,7 @@ defmodule Server do
           binary_data
           |> String.trim()
           |> String.split("\r\n")
+          |> dbg()
 
         {command, _} = get_command(data)
 
@@ -164,6 +164,10 @@ defmodule Server do
 
   defp handle_repl_conf([_, "capa", _, "psync2"]) do
     "+OK\r\n"
+  end
+
+  defp handle_repl_conf([_, "GETACK", _, "*"]) do
+    "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
   end
 
   # PYSNC

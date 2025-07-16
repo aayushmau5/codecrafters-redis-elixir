@@ -51,37 +51,36 @@ defmodule ReplicaConnection do
 
     # PSYNC ? -1
     :ok = :gen_tcp.send(socket, "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n")
-    {:ok, response} = :gen_tcp.recv(socket, 0)
-    dbg(response)
+    {:ok, "+FULLRESYNC" <> _response} = :gen_tcp.recv(socket, 0)
 
     case :gen_tcp.recv(socket, 0, 10_000) do
-      {:ok, response} -> dbg(response)
-      _ -> dbg("failed")
+      {:ok, "$" <> response} ->
+        # I'm assuming this is a RDB file sent over the network
+        dbg(response)
+
+      _ ->
+        dbg("failed")
     end
 
-    {:reply, "done", state}
-  end
-
-  @impl true
-  def handle_cast(:handle_commands, %{socket: socket} = state) do
     Supervisor.start_link([{Task, fn -> handle_propagated_responses(socket) end}],
       strategy: :one_for_one
     )
 
-    {:noreply, state}
+    {:reply, "done", state}
   end
 
   defp handle_propagated_responses(socket) do
     case :gen_tcp.recv(socket, 0) do
       {:ok, binary_data} ->
-        dbg(binary_data)
-
         data =
           binary_data
           |> String.trim()
           |> String.split("\r\n")
+          |> dbg()
 
-        Server.handle_data(data)
+        response = Server.handle_data(data) |> dbg()
+        :gen_tcp.send(socket, response)
+
         handle_propagated_responses(socket)
 
       _ ->
