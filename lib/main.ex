@@ -26,7 +26,10 @@ defmodule Server do
       :ets.insert(:config, {:dir, dir})
       :ets.insert(:config, {:dbfilename, dbfilename})
 
-      Storage.run(Path.join(dir, dbfilename), :redis_storage)
+      rdb_file_path = Path.join(dir, dbfilename)
+      :ets.insert(:config, {:dbfilepath, rdb_file_path})
+
+      Storage.run(rdb_file_path, :redis_storage)
     end
 
     if replica !== nil do
@@ -158,7 +161,17 @@ defmodule Server do
   # PYSNC
   defp handle_psync([_, "?", _, "-1"]) do
     [master_repl_id: master_repl_id] = :ets.lookup(:config, :master_repl_id)
-    "+FULLRESYNC #{master_repl_id} 0\r\n"
+
+    db_file_path =
+      case :ets.lookup(:config, :dbfilepath) do
+        [dbfilepath: dbfilepath] -> dbfilepath
+        [] -> "empty.rdb"
+      end
+
+    empty_rdb_bytes = File.read!(db_file_path)
+
+    "+FULLRESYNC #{master_repl_id} 0\r\n" <>
+      "$#{IO.iodata_length(empty_rdb_bytes)}\r\n#{empty_rdb_bytes}"
   end
 
   # INFO replication
