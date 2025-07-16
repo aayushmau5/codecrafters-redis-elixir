@@ -45,7 +45,7 @@ defmodule RDB.Parse do
   end
 
   # Metadata
-  defp handle_metadata({map, <<0xFE, rest::binary>>}), do: {map, rest}
+  defp handle_metadata({map, <<0xFE, _::binary>> = rest}), do: {map, rest}
 
   defp handle_metadata({map, <<0xFA, rest::binary>>}) do
     {key, rest} = RDB.StringEncoding.parse_string(rest)
@@ -55,8 +55,10 @@ defmodule RDB.Parse do
     handle_metadata(data)
   end
 
+  defp handle_metadata({map, rest}), do: {map, rest}
+
   # Database
-  defp handle_database({map, rest}) do
+  defp handle_database({map, <<0xFE, rest::binary>>}) do
     {db_index, rest} = RDB.SizeEncoding.parse_size_encoding(rest)
 
     <<0xFB, rest::binary>> = rest
@@ -72,8 +74,10 @@ defmodule RDB.Parse do
     {map, rest}
   end
 
+  defp handle_database(data), do: data
+
   # Data
-  defp handle_data({map, <<0xFF, rest::binary>>}), do: {map, rest}
+  defp handle_data({map, <<0xFF, _::binary>> = rest}), do: {map, rest}
 
   defp handle_data({map, <<0xFD, rest::binary>>}) do
     <<timestamp_seconds::little-32, rest::binary>> = rest
@@ -95,9 +99,10 @@ defmodule RDB.Parse do
     |> handle_data()
   end
 
-  defp handle_eof({map, <<checksum::binary-size(8), rest::binary>>}) do
+  # EOF
+  defp handle_eof({map, <<0xFF, checksum::binary-size(8), rest::binary>>}) do
     map = Map.put(map, :checksum, checksum)
-    {map, rest}
+    {map, rest} |> dbg()
   end
 
   defp parse_key_value_with_expiry(map, rest, expiry_info) do
