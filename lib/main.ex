@@ -217,9 +217,10 @@ defmodule Server do
 
   # WAIT command
   defp handle_wait([_, num_replicas, _, wait_time]) do
-    num_replicas = String.to_integer(num_replicas)
+    _num_replicas = String.to_integer(num_replicas)
     _wait_time = String.to_integer(wait_time)
-    ":#{num_replicas}\r\n"
+    connected_replicas = get_connected_replicas()
+    ":#{connected_replicas}\r\n"
   end
 
   # CONFIG
@@ -342,6 +343,10 @@ defmodule Server do
       [] -> false
       [is_replica: true] -> true
     end
+  end
+
+  defp get_connected_replicas() do
+    Agent.get(:replicas, &Enum.count(&1))
   end
 
   def reconstruct_binary_command(command_body) do

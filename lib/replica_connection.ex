@@ -88,24 +88,6 @@ defmodule ReplicaConnection do
         end
     end
 
-    # case binary_data do
-    #   "$" <> _response = binary_data ->
-    #     case :binary.match(binary_data, <<"*">>) do
-    #       {position, _} ->
-    #         dbg("parsing command")
-    #         <<_::binary-size(position), binary_data::binary>> = binary_data
-    #         handler(binary_data, socket)
-
-    #       :nomatch ->
-    #         dbg("move on")
-    #         # I'm assuming this is a RDB file sent over the network
-    #         dbg(binary_data)
-    #     end
-
-    #   _ ->
-    #     handler(binary_data, socket)
-    # end
-
     {:reply, "done", state}
   end
 
