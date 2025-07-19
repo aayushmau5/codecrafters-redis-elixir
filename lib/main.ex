@@ -16,8 +16,9 @@ defmodule Server do
     port = Keyword.get(options, :port, 6379)
     replica = Keyword.get(options, :replicaof)
 
-    :ets.new(:config, [:set, :protected, :named_table])
+    :ets.new(:config, [:set, :public, :named_table])
     :ets.insert(:config, {:port, port})
+    :ets.insert(:config, {:offset, 0})
 
     {:ok, _pid} = Agent.start_link(fn -> %{} end, name: :redis_storage)
     {:ok, _pid} = Agent.start_link(fn -> [] end, name: :replicas)
@@ -55,7 +56,7 @@ defmodule Server do
   def listen() do
     [port: port] = :ets.lookup(:config, :port)
 
-    # Send PING command to master(if running on replica instance)
+    # When replica, perform handshake with master and kickoff syncing process
     if replica?() do
       [master_host: master_host] = :ets.lookup(:config, :master_host)
       [master_port: master_port] = :ets.lookup(:config, :master_port)
@@ -71,6 +72,7 @@ defmodule Server do
       )
 
       ReplicaConnection.initialize(ReplicaConnectionOne)
+      ReplicaConnection.run_handler(ReplicaConnectionOne)
     end
 
     # Since the tester restarts your program quite often, setting SO_REUSEADDR
@@ -94,24 +96,25 @@ defmodule Server do
   defp handle_socket(client) do
     case :gen_tcp.recv(client, 0) do
       {:ok, binary_data} ->
-        data =
-          binary_data
-          |> String.trim()
-          |> String.split("\r\n")
-          |> dbg()
+        data = Utils.split_data(binary_data)
+        commands = Utils.separate_commands(data, [])
 
-        {command, _} = get_command(data)
+        Enum.each(commands, fn command_body ->
+          command_binary_data = reconstruct_binary_command(command_body)
+          {command, rest} = get_command(command_body)
 
-        if master?() and command == "psync" do
-          Agent.update(:replicas, fn clients -> [client | clients] end)
-        end
+          if master?() and command == "psync" do
+            Agent.update(:replicas, fn clients -> [client | clients] end)
+          end
 
-        response = handle_data(data)
-        :gen_tcp.send(client, response)
+          response = handle_command(command, rest)
+          :gen_tcp.send(client, response)
+          :ets.update_counter(:config, :offset, byte_size(command_binary_data))
 
-        if master?() do
-          handle_propagation(binary_data, command)
-        end
+          if master?() do
+            handle_propagation(command_binary_data, command)
+          end
+        end)
 
         handle_socket(client)
 
@@ -120,17 +123,13 @@ defmodule Server do
     end
   end
 
-  def handle_data(data) do
-    {command, data} = get_command(data)
-    handle_command(command, data)
-  end
-
-  defp handle_propagation(binary_command, command) do
+  # Handle what kind of commands we need to send over
+  defp handle_propagation(binary_data, command) do
     case command do
       "set" ->
         Agent.get(:replicas, fn clients ->
           Enum.each(clients, fn client ->
-            :gen_tcp.send(client, binary_command) |> dbg()
+            :gen_tcp.send(client, binary_data) |> dbg()
           end)
         end)
 
@@ -139,11 +138,11 @@ defmodule Server do
     end
   end
 
-  defp get_command(["*" <> _len | rest]), do: get_command(rest)
-  defp get_command(["+" | rest]), do: get_command(rest)
-  defp get_command([_, command | rest]), do: {String.downcase(command), rest}
+  def get_command([_prefix, _length, command | rest]) do
+    {String.downcase(command), rest}
+  end
 
-  defp handle_command(command, data) do
+  def handle_command(command, data) do
     case command do
       "replconf" -> handle_repl_conf(data)
       "psync" -> handle_psync(data)
@@ -167,7 +166,9 @@ defmodule Server do
   end
 
   defp handle_repl_conf([_, "GETACK", _, "*"]) do
-    "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
+    [offset: offset] = :ets.lookup(:config, :offset)
+    offset_length = String.length("#{offset}")
+    "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$#{offset_length}\r\n#{offset}\r\n"
   end
 
   # PYSNC
@@ -259,21 +260,15 @@ defmodule Server do
   # ["$3", "foo", "$4", "bar"]
   # ["$3", "foo", "$4", "bar", "$2", "px", "$3", "100"]
   defp handle_set([_, key, _, value | rest]) do
-    {options, rest} = handle_set_options(rest, %{})
+    options = handle_set_options(rest, %{})
     value = Map.merge(%{value: value}, options)
 
     Agent.update(:redis_storage, fn map ->
       Map.put(map, key, value)
     end)
 
-    if rest == [] do
-      "+OK\r\n"
-    else
-      handle_data(rest)
-    end
+    "+OK\r\n"
   end
-
-  defp handle_set_options(["*" <> _ | _] = rest, map), do: {map, rest}
 
   defp handle_set_options(["$" <> _, name, "$" <> _, value | rest] = _options, map) do
     case name do
@@ -285,12 +280,13 @@ defmodule Server do
 
         handle_set_options(rest, map)
 
-      _ ->
-        {map, rest}
+      other ->
+        dbg("Unhandled option #{other}")
+        map
     end
   end
 
-  defp handle_set_options([], map), do: {map, []}
+  defp handle_set_options([], map), do: map
 
   defp handle_get([_, key]) do
     value =
@@ -319,12 +315,14 @@ defmodule Server do
     "$#{String.length(message)}\r\n#{message}\r\n"
   end
 
-  defp handle_ping([]) do
-    "+PONG\r\n"
-  end
+  defp handle_ping(data) do
+    case data do
+      ["$" <> _len, pong] ->
+        "$#{String.length(pong)}\r\n#{pong}\r\n"
 
-  defp handle_ping([_, pong]) do
-    "$#{String.length(pong)}\r\n#{pong}\r\n"
+      [] ->
+        "+PONG\r\n"
+    end
   end
 
   defp return_nil(), do: "$-1\r\n"
@@ -336,6 +334,10 @@ defmodule Server do
       [] -> false
       [is_replica: true] -> true
     end
+  end
+
+  def reconstruct_binary_command(command_body) do
+    Enum.join(command_body, "\r\n") <> "\r\n"
   end
 end
 
