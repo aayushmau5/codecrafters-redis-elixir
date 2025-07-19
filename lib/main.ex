@@ -147,6 +147,7 @@ defmodule Server do
       "replconf" -> handle_repl_conf(data)
       "psync" -> handle_psync(data)
       "info" -> handle_info(data)
+      "wait" -> handle_wait(data)
       "config" -> handle_config(data)
       "keys" -> handle_key(data)
       "set" -> handle_set(data)
@@ -212,6 +213,13 @@ defmodule Server do
       _ ->
         return_nil()
     end
+  end
+
+  # WAIT command
+  defp handle_wait([_, num_replicas, _, wait_time]) do
+    num_replicas = String.to_integer(num_replicas)
+    _wait_time = String.to_integer(wait_time)
+    ":#{num_replicas}\r\n"
   end
 
   # CONFIG
