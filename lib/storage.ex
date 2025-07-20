@@ -1,8 +1,8 @@
 defmodule Storage do
-  def run(path, agent_name) do
+  def run(path) do
     read_rdb_file(path)
     |> parse_rdb()
-    |> load_in_agent(agent_name)
+    |> load_in_ets()
   end
 
   defp read_rdb_file(path) do
@@ -17,12 +17,22 @@ defmodule Storage do
     RDB.Parse.parse(data)
   end
 
-  defp load_in_agent({map, _}, agent_name) do
+  defp load_in_ets({map, _}) do
     data = Map.get(map, :data)
     dbg(data)
 
-    Agent.update(agent_name, fn _ ->
-      data
+    Enum.each(data, fn {key, value} ->
+      value_data =
+        case value do
+          %{ttl: ttl, value: val} ->
+            expiry_ms = DateTime.to_unix(ttl, :millisecond)
+            {val, expiry_ms}
+
+          %{value: val} ->
+            {val, nil}
+        end
+
+      :ets.insert(:redis_storage, {key, value_data})
     end)
   end
 end

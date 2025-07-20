@@ -6,22 +6,38 @@ defmodule Server do
   use Application
 
   def start(_type, _args) do
-    {options, _, _} =
-      OptionParser.parse(System.argv(),
-        strict: [dir: :string, dbfilename: :string, port: :integer, replicaof: :string]
-      )
+    args = parse_arguments()
+    dir = Keyword.get(args, :dir)
+    dbfilename = Keyword.get(args, :dbfilename)
+    port = Keyword.get(args, :port, 6379)
+    replica = Keyword.get(args, :replicaof)
 
-    dir = Keyword.get(options, :dir)
-    dbfilename = Keyword.get(options, :dbfilename)
-    port = Keyword.get(options, :port, 6379)
-    replica = Keyword.get(options, :replicaof)
+    :ets.new(:config, [
+      :set,
+      :public,
+      :named_table,
+      read_concurrency: true,
+      write_concurrency: true
+    ])
 
-    :ets.new(:config, [:set, :public, :named_table])
     :ets.insert(:config, {:port, port})
     :ets.insert(:config, {:offset, 0})
 
-    {:ok, _pid} = Agent.start_link(fn -> %{} end, name: :redis_storage)
-    {:ok, _pid} = Agent.start_link(fn -> [] end, name: :replicas)
+    :ets.new(:redis_storage, [
+      :set,
+      :public,
+      :named_table,
+      read_concurrency: true,
+      write_concurrency: true
+    ])
+
+    :ets.new(:replicas, [
+      :bag,
+      :public,
+      :named_table,
+      read_concurrency: true,
+      write_concurrency: true
+    ])
 
     if dir != nil and dbfilename != nil do
       # db config
@@ -31,7 +47,7 @@ defmodule Server do
       rdb_file_path = Path.join(dir, dbfilename)
       :ets.insert(:config, {:dbfilepath, rdb_file_path})
 
-      Storage.run(rdb_file_path, :redis_storage)
+      Storage.run(rdb_file_path)
     end
 
     if replica do
@@ -94,47 +110,41 @@ defmodule Server do
   end
 
   defp handle_socket(client) do
-    case :gen_tcp.recv(client, 0) do
+    dbg("Processing client #{inspect(client)}")
+
+    case :gen_tcp.recv(client, 0, 500) do
       {:ok, binary_data} ->
+        dbg("RECEIVED ON MAIN THREAD: #{binary_data}")
         data = Utils.split_data(binary_data)
         commands = Utils.separate_commands(data, [])
 
-        Enum.each(commands, fn command_body ->
-          command_binary_data = reconstruct_binary_command(command_body)
-          {command, rest} = get_command(command_body)
+        continue_socket? =
+          Enum.reduce(commands, true, fn command_body, acc ->
+            command_binary = reconstruct_binary_command(command_body)
+            {command, rest} = get_command(command_body)
 
-          if master?() and command == "psync" do
-            Agent.update(:replicas, fn clients -> [client | clients] end)
-          end
+            is_replica_connection = is_replica_connection?(command)
 
-          response = handle_command(command, rest)
-          :gen_tcp.send(client, response)
-          :ets.update_counter(:config, :offset, byte_size(command_binary_data))
+            if is_replica_connection do
+              :ets.insert(:replicas, {:client, client})
+            end
 
-          if master?() do
-            handle_propagation(command_binary_data, command)
-          end
-        end)
+            dbg(command_binary)
+            response = handle_command(command, rest) |> dbg()
+            :gen_tcp.send(client, response) |> dbg()
 
-        handle_socket(client)
+            update_offset(command, command_binary)
+            propagate(command, command_binary)
+
+            acc and not is_replica_connection
+          end)
+
+        dbg(continue_socket?)
+
+        if continue_socket?, do: handle_socket(client)
 
       {:error, reason} ->
         IO.puts("Error receiving data: #{reason}")
-    end
-  end
-
-  # Handle what kind of commands we need to send over
-  defp handle_propagation(binary_data, command) do
-    case command do
-      "set" ->
-        Agent.get(:replicas, fn clients ->
-          Enum.each(clients, fn client ->
-            :gen_tcp.send(client, binary_data) |> dbg()
-          end)
-        end)
-
-      _ ->
-        nil
     end
   end
 
@@ -158,19 +168,16 @@ defmodule Server do
   end
 
   # REPLCONF
-  defp handle_repl_conf([_, "listening-port", _, _port]) do
-    "+OK\r\n"
-  end
-
-  defp handle_repl_conf([_, "capa", _, "psync2"]) do
-    "+OK\r\n"
-  end
+  defp handle_repl_conf([_, "listening-port", _, _port]), do: "+OK\r\n"
+  defp handle_repl_conf([_, "capa", _, "psync2"]), do: "+OK\r\n"
 
   defp handle_repl_conf([_, "GETACK", _, "*"]) do
     [offset: offset] = :ets.lookup(:config, :offset)
     offset_length = String.length("#{offset}")
     "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$#{offset_length}\r\n#{offset}\r\n"
   end
+
+  defp handle_repl_conf([_, "ACK", _, _]), do: ""
 
   # PYSNC
   defp handle_psync([_, "?", _, "-1"]) do
@@ -217,10 +224,15 @@ defmodule Server do
 
   # WAIT command
   defp handle_wait([_, num_replicas, _, wait_time]) do
-    _num_replicas = String.to_integer(num_replicas)
-    _wait_time = String.to_integer(wait_time)
-    connected_replicas = get_connected_replicas()
-    ":#{connected_replicas}\r\n"
+    required_replicas = String.to_integer(num_replicas)
+    wait_time_ms = String.to_integer(wait_time)
+
+    {:ok, wait_pid} =
+      GenServer.start(Wait, required_replicas: required_replicas, timeout_ms: wait_time_ms)
+
+    ack_count = Wait.wait_for_replicas(wait_pid) |> dbg()
+
+    ":#{ack_count}\r\n"
   end
 
   # CONFIG
@@ -243,23 +255,16 @@ defmodule Server do
   end
 
   defp handle_key([_, "*"]) do
-    keys =
-      Agent.get(:redis_storage, fn state ->
-        Map.keys(state)
-      end)
+    keys = :ets.match(:redis_storage, {:"$1", :_})
+    key_list = List.flatten(keys)
 
-    Enum.reduce(keys, "*#{length(keys)}\r\n", fn value, acc ->
+    Enum.reduce(key_list, "*#{length(keys)}\r\n", fn value, acc ->
       acc <> "$#{String.length(value)}\r\n#{value}\r\n"
     end)
   end
 
   defp handle_key([_, key]) do
-    keys =
-      Agent.get(:redis_storage, fn state ->
-        Map.keys(state)
-      end)
-
-    if Enum.member?(keys, key) do
+    if :ets.lookup(:redis_storage, key) != [] do
       "*1\r\n$#{String.length(key)}\r\n#{key}\r\n"
     else
       return_nil()
@@ -270,23 +275,25 @@ defmodule Server do
   # ["$3", "foo", "$4", "bar", "$2", "px", "$3", "100"]
   defp handle_set([_, key, _, value | rest]) do
     options = handle_set_options(rest, %{})
-    value = Map.merge(%{value: value}, options)
 
-    Agent.update(:redis_storage, fn map ->
-      Map.put(map, key, value)
-    end)
+    value_data =
+      case options do
+        %{ttl_ms: ttl_ms} ->
+          expiry_time = :erlang.system_time(:millisecond) + ttl_ms
+          {value, expiry_time}
 
+        _ ->
+          {value, nil}
+      end
+
+    :ets.insert(:redis_storage, {key, value_data})
     "+OK\r\n"
   end
 
   defp handle_set_options(["$" <> _, name, "$" <> _, value | rest] = _options, map) do
     case name do
       "px" ->
-        map =
-          Map.merge(map, %{
-            ttl: DateTime.add(DateTime.utc_now(), String.to_integer(value), :millisecond)
-          })
-
+        map = Map.put(map, :ttl_ms, String.to_integer(value))
         handle_set_options(rest, map)
 
       other ->
@@ -298,25 +305,22 @@ defmodule Server do
   defp handle_set_options([], map), do: map
 
   defp handle_get([_, key]) do
-    value =
-      Agent.get(:redis_storage, fn map ->
-        Map.get(map, key)
-      end)
-
-    case value do
-      nil ->
+    case :ets.lookup(:redis_storage, key) do
+      [] ->
         return_nil()
 
-      %{ttl: ttl, value: value} ->
-        if DateTime.diff(ttl, DateTime.utc_now(), :millisecond) > 0 do
+      [{^key, {value, nil}}] ->
+        "$#{String.length(value)}\r\n#{value}\r\n"
+
+      [{^key, {value, expiry_time}}] ->
+        current_time = :erlang.system_time(:millisecond)
+
+        if current_time < expiry_time do
           "$#{String.length(value)}\r\n#{value}\r\n"
         else
-          Agent.update(:redis_storage, fn map -> Map.delete(map, key) end)
+          :ets.delete(:redis_storage, key)
           return_nil()
         end
-
-      %{value: value} ->
-        "$#{String.length(value)}\r\n#{value}\r\n"
     end
   end
 
@@ -345,13 +349,47 @@ defmodule Server do
     end
   end
 
-  defp get_connected_replicas() do
-    Agent.get(:replicas, &Enum.count(&1))
-  end
-
   def reconstruct_binary_command(command_body) do
     Enum.join(command_body, "\r\n") <> "\r\n"
   end
+
+  defp needs_propagation?(command), do: Enum.member?(["set"], command)
+
+  # Handle what kind of commands we need to send over
+  defp propagate(command, command_binary) do
+    if master?() and needs_propagation?(command) do
+      clients = :ets.match(:replicas, {:client, :"$1"})
+
+      clients
+      |> List.flatten()
+      |> Task.async_stream(
+        fn client ->
+          :gen_tcp.send(client, command_binary)
+        end,
+        max_concurrency: 10,
+        timeout: 1000
+      )
+      |> Stream.run()
+    end
+  end
+
+  def needs_offset_update?(command), do: command in ["set", "del", "replconf"]
+
+  def update_offset(command, command_binary) do
+    if needs_offset_update?(command),
+      do: :ets.update_counter(:config, :offset, byte_size(command_binary))
+  end
+
+  defp parse_arguments() do
+    {options, _, _} =
+      OptionParser.parse(System.argv(),
+        strict: [dir: :string, dbfilename: :string, port: :integer, replicaof: :string]
+      )
+
+    options
+  end
+
+  defp is_replica_connection?(command), do: master?() and command == "psync"
 end
 
 defmodule CLI do

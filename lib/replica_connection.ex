@@ -53,29 +53,22 @@ defmodule ReplicaConnection do
     :ok = :gen_tcp.send(socket, "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n")
     {:ok, "+FULLRESYNC" <> binary_data} = :gen_tcp.recv(socket, 0)
 
-    dbg("after fulleresync")
-
     # cases:
     # binary_data doesn't contain any command(we need to handle data later)
     # binary_data contains file
     # binary_data contains file + a pipelined command
-    dbg("running match")
-
     case :binary.match(binary_data, <<"*">>) do
       {position, _} ->
-        dbg("match found")
         <<_::binary-size(position), binary_data::binary>> = binary_data
         handler(binary_data, socket)
 
       :nomatch ->
-        dbg("no match")
         response = :gen_tcp.recv(socket, 0, 5_000) |> dbg()
 
         case response do
           {:ok, binary_data} ->
             case :binary.match(binary_data, <<"*">>) do
               {position, _} ->
-                dbg("parsing command")
                 <<_::binary-size(position), binary_data::binary>> = binary_data
                 handler(binary_data, socket)
 
@@ -120,18 +113,18 @@ defmodule ReplicaConnection do
     commands = Utils.separate_commands(data, []) |> dbg()
 
     Enum.each(commands, fn command_body ->
-      command_binary_data = Server.reconstruct_binary_command(command_body)
+      command_binary = Server.reconstruct_binary_command(command_body)
       {command, rest} = Server.get_command(command_body)
+
+      dbg("HANDLING IN REPLICA connection #{inspect(client)} #{command_binary}")
 
       response = Server.handle_command(command, rest)
       if reply?(command), do: :gen_tcp.send(client, response)
-      dbg("Updating #{byte_size(command_binary_data)}")
-      :ets.update_counter(:config, :offset, byte_size(command_binary_data))
+      Server.update_offset(command, command_binary)
     end)
   end
 
   defp reply?(command) do
-    dbg(command)
     Enum.member?(["replconf"], command)
   end
 end
