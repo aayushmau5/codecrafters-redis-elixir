@@ -111,51 +111,38 @@ defmodule Server do
   end
 
   defp handle_socket(client) do
-    dbg("Processing client #{inspect(client)}")
-
-    # Check if this is a replica connection
-    is_replica = :ets.match(:replicas, {:client, client}) != []
-
     case :gen_tcp.recv(client, 0, 5000) do
       {:ok, binary_data} ->
         dbg("RECEIVED ON MAIN THREAD: #{binary_data}")
         data = Utils.split_data(binary_data)
         commands = Utils.separate_commands(data, [])
 
-        {continue_socket?, replica_after_psync} =
-          Enum.reduce(commands, {true, false}, fn command_body, {acc, is_replica} ->
-            command_binary = reconstruct_binary_command(command_body)
-            {command, rest} = get_command(command_body)
+        Enum.each(commands, fn command_body ->
+          command_binary = reconstruct_binary_command(command_body)
+          {command, rest} = get_command(command_body)
 
-            is_replica_connection = is_replica_connection?(command)
+          is_replica_connection = is_replica_connection?(command)
 
-            if is_replica_connection do
-              :ets.insert(:replicas, {:client, client})
-            end
+          if is_replica_connection do
+            :ets.insert(:replicas, {:client, client})
+          end
 
-            dbg(command_binary)
-            response = handle_command(command, rest) |> dbg()
-            :gen_tcp.send(client, response) |> dbg()
+          dbg(command_binary)
+          response = handle_command(command, rest) |> dbg()
+          :gen_tcp.send(client, response) |> dbg()
 
-            update_offset(command, command_binary)
-            propagate(command, command_binary)
+          update_offset(command, command_binary)
+          propagate(command, command_binary)
+        end)
 
-            # For PSYNC, we want to exit after sending the response but keep replica connections alive
-            if is_replica_connection do
-              {false, true}
-            else
-              {acc, is_replica}
-            end
-          end)
-
-        dbg(continue_socket?)
-
-        # Keep replica connections alive for ACK messages even after PSYNC
-        if continue_socket? or replica_after_psync, do: handle_socket(client)
-
-      {:error, :timeout} when is_replica ->
-        # For replica connections, timeout is normal - just continue listening
         handle_socket(client)
+
+      {:error, :timeout} ->
+        # Check if this is a replica connection
+        is_replica = :ets.match(:replicas, {:client, client}) != []
+
+        # For replica connections, timeout is normal - just continue listening
+        if is_replica, do: handle_socket(client)
 
       {:error, reason} ->
         IO.puts("Error receiving data: #{reason}")
@@ -174,6 +161,7 @@ defmodule Server do
       "wait" -> handle_wait(data)
       "config" -> handle_config(data)
       "keys" -> handle_key(data)
+      "type" -> handle_type(data)
       "set" -> handle_set(data)
       "get" -> handle_get(data)
       "echo" -> handle_echo(data)
@@ -296,6 +284,7 @@ defmodule Server do
     end
   end
 
+  # KEYS
   defp handle_key([_, "*"]) do
     keys = :ets.match(:redis_storage, {:"$1", :_})
     key_list = List.flatten(keys)
@@ -310,6 +299,14 @@ defmodule Server do
       "*1\r\n$#{String.length(key)}\r\n#{key}\r\n"
     else
       return_nil()
+    end
+  end
+
+  # TYPE
+  defp handle_type([_, _key] = data) do
+    case handle_get(data) do
+      "$-1\r\n" -> "+none\r\n"
+      _ -> "+string\r\n"
     end
   end
 
