@@ -32,6 +32,14 @@ defmodule Server do
       write_concurrency: true
     ])
 
+    :ets.new(:stream_storage, [
+      :duplicate_bag,
+      :public,
+      :named_table,
+      read_concurrency: true,
+      write_concurrency: true
+    ])
+
     :ets.new(:replicas, [
       :bag,
       :public,
@@ -155,6 +163,7 @@ defmodule Server do
 
   def handle_command(command, data) do
     case command do
+      "xadd" -> handle_xadd(data)
       "replconf" -> handle_repl_conf(data)
       "psync" -> handle_psync(data)
       "info" -> handle_info(data)
@@ -167,6 +176,28 @@ defmodule Server do
       "echo" -> handle_echo(data)
       "ping" -> handle_ping(data)
     end
+  end
+
+  # XADD(streams)
+  def handle_xadd([_, _stream_key, _, "*" | rest]) do
+    _kv = get_kv_map(rest)
+    ""
+  end
+
+  def handle_xadd([_, stream_key, _, id | rest]) do
+    kv = get_kv_map(rest)
+    :ets.insert(:stream_storage, {stream_key, id, kv})
+
+    dbg(:ets.match_object(:stream_storage, {stream_key, id, :_}))
+
+    "$#{String.length(id)}\r\n#{id}\r\n"
+  end
+
+  defp get_kv_map(rest) do
+    Enum.chunk_every(rest, 4)
+    |> Enum.reduce(%{}, fn [_, key, _, value], map ->
+      Map.put(map, key, value)
+    end)
   end
 
   # REPLCONF
@@ -303,10 +334,19 @@ defmodule Server do
   end
 
   # TYPE
-  defp handle_type([_, _key] = data) do
-    case handle_get(data) do
-      "$-1\r\n" -> "+none\r\n"
-      _ -> "+string\r\n"
+  defp handle_type([_, key]) do
+    case :ets.lookup(:redis_storage, key) do
+      [] ->
+        case :ets.lookup(:stream_storage, key) do
+          [] ->
+            "+none\r\n"
+
+          _ ->
+            "+stream\r\n"
+        end
+
+      [{^key, {_value, _}}] ->
+        "+string\r\n"
     end
   end
 
