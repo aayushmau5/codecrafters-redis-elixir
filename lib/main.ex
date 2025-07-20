@@ -22,6 +22,7 @@ defmodule Server do
 
     :ets.insert(:config, {:port, port})
     :ets.insert(:config, {:offset, 0})
+    :ets.insert(:config, {:pending_writes, false})
 
     :ets.new(:redis_storage, [
       :set,
@@ -112,14 +113,17 @@ defmodule Server do
   defp handle_socket(client) do
     dbg("Processing client #{inspect(client)}")
 
-    case :gen_tcp.recv(client, 0, 500) do
+    # Check if this is a replica connection
+    is_replica = :ets.match(:replicas, {:client, client}) != []
+
+    case :gen_tcp.recv(client, 0, 5000) do
       {:ok, binary_data} ->
         dbg("RECEIVED ON MAIN THREAD: #{binary_data}")
         data = Utils.split_data(binary_data)
         commands = Utils.separate_commands(data, [])
 
-        continue_socket? =
-          Enum.reduce(commands, true, fn command_body, acc ->
+        {continue_socket?, replica_after_psync} =
+          Enum.reduce(commands, {true, false}, fn command_body, {acc, is_replica} ->
             command_binary = reconstruct_binary_command(command_body)
             {command, rest} = get_command(command_body)
 
@@ -136,12 +140,22 @@ defmodule Server do
             update_offset(command, command_binary)
             propagate(command, command_binary)
 
-            acc and not is_replica_connection
+            # For PSYNC, we want to exit after sending the response but keep replica connections alive
+            if is_replica_connection do
+              {false, true}
+            else
+              {acc, is_replica}
+            end
           end)
 
         dbg(continue_socket?)
 
-        if continue_socket?, do: handle_socket(client)
+        # Keep replica connections alive for ACK messages even after PSYNC
+        if continue_socket? or replica_after_psync, do: handle_socket(client)
+
+      {:error, :timeout} when is_replica ->
+        # For replica connections, timeout is normal - just continue listening
+        handle_socket(client)
 
       {:error, reason} ->
         IO.puts("Error receiving data: #{reason}")
@@ -177,7 +191,20 @@ defmodule Server do
     "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$#{offset_length}\r\n#{offset}\r\n"
   end
 
-  defp handle_repl_conf([_, "ACK", _, _]), do: ""
+  defp handle_repl_conf([_, "ACK", _, _]) do
+    # Notify the current wait process if one exists
+    case :ets.lookup(:config, :current_wait_pid) do
+      [{:current_wait_pid, wait_pid}] when is_pid(wait_pid) ->
+        if Process.alive?(wait_pid) do
+          Wait.notify_ack(wait_pid)
+        end
+
+      _ ->
+        :ok
+    end
+
+    ""
+  end
 
   # PYSNC
   defp handle_psync([_, "?", _, "-1"]) do
@@ -227,12 +254,27 @@ defmodule Server do
     required_replicas = String.to_integer(num_replicas)
     wait_time_ms = String.to_integer(wait_time)
 
-    {:ok, wait_pid} =
-      GenServer.start(Wait, required_replicas: required_replicas, timeout_ms: wait_time_ms)
+    # Check if there are pending writes since the last WAIT
+    case :ets.lookup(:config, :pending_writes) do
+      [{:pending_writes, false}] ->
+        # No pending writes, return number of replicas immediately
+        replicas = :ets.match(:replicas, {:client, :"$1"}) |> List.flatten()
+        replica_count = length(replicas)
+        ":#{replica_count}\r\n"
 
-    ack_count = Wait.wait_for_replicas(wait_pid) |> dbg()
+      [{:pending_writes, true}] ->
+        # There are pending writes, send GETACK and wait for responses
+        {:ok, wait_pid} =
+          Wait.start_link(required_replicas: required_replicas, timeout_ms: wait_time_ms)
 
-    ":#{ack_count}\r\n"
+        ack_count = Wait.wait_for_replicas(wait_pid) |> dbg()
+
+        # Clean up the wait process reference and reset pending writes
+        :ets.delete(:config, :current_wait_pid)
+        :ets.insert(:config, {:pending_writes, false})
+
+        ":#{ack_count}\r\n"
+    end
   end
 
   # CONFIG
@@ -358,6 +400,9 @@ defmodule Server do
   # Handle what kind of commands we need to send over
   defp propagate(command, command_binary) do
     if master?() and needs_propagation?(command) do
+      # Mark that we have pending writes
+      :ets.insert(:config, {:pending_writes, true})
+
       clients = :ets.match(:replicas, {:client, :"$1"})
 
       clients
@@ -373,7 +418,7 @@ defmodule Server do
     end
   end
 
-  def needs_offset_update?(command), do: command in ["set", "del", "replconf"]
+  def needs_offset_update?(command), do: command in ["ping", "set", "del", "replconf"]
 
   def update_offset(command, command_binary) do
     if needs_offset_update?(command),
