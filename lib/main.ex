@@ -23,6 +23,7 @@ defmodule Server do
     :ets.insert(:config, {:port, port})
     :ets.insert(:config, {:offset, 0})
     :ets.insert(:config, {:pending_writes, false})
+    :ets.insert(:config, {:last_stream_entry_id, "0-0"})
 
     :ets.new(:redis_storage, [
       :set,
@@ -181,17 +182,50 @@ defmodule Server do
   # XADD(streams)
   def handle_xadd([_, _stream_key, _, "*" | rest]) do
     _kv = get_kv_map(rest)
-    ""
+    "-ERR \"not implemeted yet\"\r\n"
   end
 
+  def handle_xadd([_, _, _, "0-0" | _rest]),
+    do: "-ERR The ID specified in XADD must be greater than 0-0\r\n"
+
   def handle_xadd([_, stream_key, _, id | rest]) do
+    [last_stream_entry_id: last_entry_id] = :ets.lookup(:config, :last_stream_entry_id)
+
+    if valid_id?(id_to_array(id), id_to_array(last_entry_id)) do
+      insert_stream(stream_key, id, rest)
+    else
+      xadd_id_error()
+    end
+  end
+
+  defp valid_id?([ms, offset], [last_ms, last_offset]) do
+    cond do
+      ms > last_ms -> true
+      ms == last_ms and offset > last_offset -> true
+      true -> false
+    end
+  end
+
+  defp insert_stream(stream_key, id, rest) do
     kv = get_kv_map(rest)
     :ets.insert(:stream_storage, {stream_key, id, kv})
 
-    dbg(:ets.match_object(:stream_storage, {stream_key, id, :_}))
+    # Add last stream entry's id
+    # Use insert since :config is `:set` table
+    :ets.insert(:config, {:last_stream_entry_id, id})
 
     "$#{String.length(id)}\r\n#{id}\r\n"
   end
+
+  defp id_to_array(id) do
+    String.split(id, "-")
+    |> then(fn [last_ms, last_offset] ->
+      [String.to_integer(last_ms), String.to_integer(last_offset)]
+    end)
+  end
+
+  defp xadd_id_error(),
+    do: "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n"
 
   defp get_kv_map(rest) do
     Enum.chunk_every(rest, 4)
