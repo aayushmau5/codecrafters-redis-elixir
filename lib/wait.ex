@@ -1,6 +1,9 @@
 defmodule Wait do
   use GenServer
 
+  @config_table :config
+  @replicas_table :replicas
+
   # Public API
   def start_link(args) do
     GenServer.start_link(__MODULE__, args)
@@ -25,7 +28,7 @@ defmodule Wait do
     )
 
     # Register this process globally so the main server can find it
-    :ets.insert(:config, {:current_wait_pid, self()})
+    :ets.insert(@config_table, {:current_wait_pid, self()})
 
     {:ok,
      %{
@@ -41,7 +44,7 @@ defmodule Wait do
   def handle_call(:wait, from, %{timeout_ms: timeout_ms} = state) do
     dbg("GenServer handle_call :wait received")
 
-    replicas = :ets.match(:replicas, {:client, :"$1"}) |> List.flatten()
+    replicas = :ets.match(@replicas_table, {:client, :"$1"}) |> List.flatten()
     dbg("Found #{length(replicas)} replicas: #{inspect(replicas)}")
 
     if Enum.empty?(replicas) do

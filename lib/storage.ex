@@ -1,4 +1,6 @@
 defmodule Storage do
+  @storage_table :redis_storage
+
   def run(path) do
     read_rdb_file(path)
     |> parse_rdb()
@@ -32,7 +34,7 @@ defmodule Storage do
             {val, nil}
         end
 
-      :ets.insert(:redis_storage, {key, value_data})
+      :ets.insert(@storage_table, {key, value_data})
     end)
   end
 end

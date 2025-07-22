@@ -2,6 +2,8 @@ defmodule ReplicaConnection do
   # from replica -> master connection
   use GenServer
 
+  @config_table :config
+
   def start_link(args) do
     name = Keyword.get(args, :name)
     GenServer.start_link(__MODULE__, args, name: name)
@@ -34,7 +36,7 @@ defmodule ReplicaConnection do
     :ok = :gen_tcp.send(socket, "*1\r\n$4\r\nPING\r\n")
     {:ok, "+PONG\r\n"} = :gen_tcp.recv(socket, 0)
 
-    [port: port] = :ets.lookup(:config, :port)
+    [port: port] = :ets.lookup(@config_table, :port)
 
     # REPLCONF listening-port <port>
     :ok =

@@ -3,6 +3,11 @@ defmodule Server do
   Your implementation of a Redis server
   """
 
+  @config_table :config
+  @storage_table :redis_storage
+  @stream_table :stream_storage
+  @replicas_table :replicas
+
   use Application
 
   def start(_type, _args) do
@@ -12,7 +17,7 @@ defmodule Server do
     port = Keyword.get(args, :port, 6379)
     replica = Keyword.get(args, :replicaof)
 
-    :ets.new(:config, [
+    :ets.new(@config_table, [
       :set,
       :public,
       :named_table,
@@ -20,12 +25,14 @@ defmodule Server do
       write_concurrency: true
     ])
 
-    :ets.insert(:config, {:port, port})
-    :ets.insert(:config, {:offset, 0})
-    :ets.insert(:config, {:pending_writes, false})
-    :ets.insert(:config, {:last_stream_entry_id, "0-0"})
+    :ets.insert(@config_table, {:port, port})
+    :ets.insert(@config_table, {:offset, 0})
+    :ets.insert(@config_table, {:pending_writes, false})
+    # TODO: this doesn't handle stream-key value.
+    # I think we need to handle this in {"stream-key", "last-entry-id"} format
+    # :ets.insert(@config_table, {:last_stream_entry, {0, 0}})
 
-    :ets.new(:redis_storage, [
+    :ets.new(@storage_table, [
       :set,
       :public,
       :named_table,
@@ -33,15 +40,15 @@ defmodule Server do
       write_concurrency: true
     ])
 
-    :ets.new(:stream_storage, [
-      :duplicate_bag,
+    :ets.new(@stream_table, [
+      :ordered_set,
       :public,
       :named_table,
       read_concurrency: true,
       write_concurrency: true
     ])
 
-    :ets.new(:replicas, [
+    :ets.new(@replicas_table, [
       :bag,
       :public,
       :named_table,
@@ -51,11 +58,11 @@ defmodule Server do
 
     if dir != nil and dbfilename != nil do
       # db config
-      :ets.insert(:config, {:dir, dir})
-      :ets.insert(:config, {:dbfilename, dbfilename})
+      :ets.insert(@config_table, {:dir, dir})
+      :ets.insert(@config_table, {:dbfilename, dbfilename})
 
       rdb_file_path = Path.join(dir, dbfilename)
-      :ets.insert(:config, {:dbfilepath, rdb_file_path})
+      :ets.insert(@config_table, {:dbfilepath, rdb_file_path})
 
       Storage.run(rdb_file_path)
     end
@@ -63,14 +70,14 @@ defmodule Server do
     if replica do
       [host, port] = String.split(replica, " ")
       port = String.to_integer(port)
-      :ets.insert(:config, {:is_replica, true})
-      :ets.insert(:config, {:master_host, host})
-      :ets.insert(:config, {:master_port, port})
+      :ets.insert(@config_table, {:is_replica, true})
+      :ets.insert(@config_table, {:master_host, host})
+      :ets.insert(@config_table, {:master_port, port})
     else
       master_repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
       master_repl_offset = 0
-      :ets.insert(:config, {:master_repl_id, master_repl_id})
-      :ets.insert(:config, {:master_repl_offset, master_repl_offset})
+      :ets.insert(@config_table, {:master_repl_id, master_repl_id})
+      :ets.insert(@config_table, {:master_repl_offset, master_repl_offset})
     end
 
     Supervisor.start_link([{Task, fn -> Server.listen() end}], strategy: :one_for_one)
@@ -80,12 +87,12 @@ defmodule Server do
   Listen for incoming connections
   """
   def listen() do
-    [port: port] = :ets.lookup(:config, :port)
+    [port: port] = :ets.lookup(@config_table, :port)
 
     # When replica, perform handshake with master and kickoff syncing process
     if replica?() do
-      [master_host: master_host] = :ets.lookup(:config, :master_host)
-      [master_port: master_port] = :ets.lookup(:config, :master_port)
+      [master_host: master_host] = :ets.lookup(@config_table, :master_host)
+      [master_port: master_port] = :ets.lookup(@config_table, :master_port)
 
       Supervisor.start_link(
         [
@@ -133,10 +140,9 @@ defmodule Server do
           is_replica_connection = is_replica_connection?(command)
 
           if is_replica_connection do
-            :ets.insert(:replicas, {:client, client})
+            :ets.insert(@replicas_table, {:client, client})
           end
 
-          dbg(command_binary)
           response = handle_command(command, rest) |> dbg()
           :gen_tcp.send(client, response) |> dbg()
 
@@ -147,10 +153,9 @@ defmodule Server do
         handle_socket(client)
 
       {:error, :timeout} ->
-        # Check if this is a replica connection
-        is_replica = :ets.match(:replicas, {:client, client}) != []
-
         # For replica connections, timeout is normal - just continue listening
+        # Check if this is a replica connection
+        is_replica = :ets.match(@replicas_table, {:client, client}) != []
         if is_replica, do: handle_socket(client)
 
       {:error, reason} ->
@@ -189,16 +194,38 @@ defmodule Server do
     do: "-ERR The ID specified in XADD must be greater than 0-0\r\n"
 
   def handle_xadd([_, stream_key, _, id | rest]) do
-    [last_stream_entry_id: last_entry_id] = :ets.lookup(:config, :last_stream_entry_id)
+    case String.split(id, "-") do
+      # "something-*"
+      [ms, "*"] ->
+        ms = String.to_integer(ms)
 
-    if valid_id?(id_to_array(id), id_to_array(last_entry_id)) do
-      insert_stream(stream_key, id, rest)
-    else
-      xadd_id_error()
+        case :ets.match_object(@config_table, {{:last_stream_entry, stream_key}, {ms, :_}}) do
+          [] ->
+            # 0-0 already exists, so start 0-1
+            id = if ms == 0, do: "0-1", else: "#{ms}-0"
+            insert_stream(stream_key, id, rest)
+
+          [{_, {ms, last_offset}}] ->
+            insert_stream(stream_key, "#{ms}-#{last_offset + 1}", rest)
+        end
+
+      # "something-something"
+      _ ->
+        last_entry_id =
+          case :ets.match_object(@config_table, {{:last_stream_entry, stream_key}, {:_, :_}}) do
+            [] -> {0, 0}
+            [{_, {ms, offset}}] -> {ms, offset}
+          end
+
+        if valid_id?(id_to_tuple(id), last_entry_id) do
+          insert_stream(stream_key, id, rest)
+        else
+          xadd_id_error()
+        end
     end
   end
 
-  defp valid_id?([ms, offset], [last_ms, last_offset]) do
+  defp valid_id?({ms, offset}, {last_ms, last_offset}) do
     cond do
       ms > last_ms -> true
       ms == last_ms and offset > last_offset -> true
@@ -206,21 +233,23 @@ defmodule Server do
     end
   end
 
-  defp insert_stream(stream_key, id, rest) do
+  def insert_stream(stream_key, id, rest) do
     kv = get_kv_map(rest)
-    :ets.insert(:stream_storage, {stream_key, id, kv})
+    id_tuple = id_to_tuple(id)
+    # {stream_key, {id_num, offset_num}, kv}
+    :ets.insert(@stream_table, {stream_key, id_tuple, kv})
 
     # Add last stream entry's id
     # Use insert since :config is `:set` table
-    :ets.insert(:config, {:last_stream_entry_id, id})
+    :ets.insert(@config_table, {{:last_stream_entry, stream_key}, id_tuple})
 
     "$#{String.length(id)}\r\n#{id}\r\n"
   end
 
-  defp id_to_array(id) do
+  defp id_to_tuple(id) do
     String.split(id, "-")
     |> then(fn [last_ms, last_offset] ->
-      [String.to_integer(last_ms), String.to_integer(last_offset)]
+      {String.to_integer(last_ms), String.to_integer(last_offset)}
     end)
   end
 
@@ -239,14 +268,14 @@ defmodule Server do
   defp handle_repl_conf([_, "capa", _, "psync2"]), do: "+OK\r\n"
 
   defp handle_repl_conf([_, "GETACK", _, "*"]) do
-    [offset: offset] = :ets.lookup(:config, :offset)
+    [offset: offset] = :ets.lookup(@config_table, :offset)
     offset_length = String.length("#{offset}")
     "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$#{offset_length}\r\n#{offset}\r\n"
   end
 
   defp handle_repl_conf([_, "ACK", _, _]) do
     # Notify the current wait process if one exists
-    case :ets.lookup(:config, :current_wait_pid) do
+    case :ets.lookup(@config_table, :current_wait_pid) do
       [{:current_wait_pid, wait_pid}] when is_pid(wait_pid) ->
         if Process.alive?(wait_pid) do
           Wait.notify_ack(wait_pid)
@@ -261,10 +290,10 @@ defmodule Server do
 
   # PYSNC
   defp handle_psync([_, "?", _, "-1"]) do
-    [master_repl_id: master_repl_id] = :ets.lookup(:config, :master_repl_id)
+    [master_repl_id: master_repl_id] = :ets.lookup(@config_table, :master_repl_id)
 
     db_file_path =
-      case :ets.lookup(:config, :dbfilepath) do
+      case :ets.lookup(@config_table, :dbfilepath) do
         [dbfilepath: dbfilepath] -> dbfilepath
         [] -> "empty.rdb"
       end
@@ -278,10 +307,13 @@ defmodule Server do
   defp handle_info([_, key]) do
     case key do
       "replication" ->
-        case :ets.lookup(:config, :is_replica) do
+        case :ets.lookup(@config_table, :is_replica) do
           [] ->
-            [master_repl_id: master_repl_id] = :ets.lookup(:config, :master_repl_id)
-            [master_repl_offset: master_repl_offset] = :ets.lookup(:config, :master_repl_offset)
+            [master_repl_id: master_repl_id] = :ets.lookup(@config_table, :master_repl_id)
+
+            [master_repl_offset: master_repl_offset] =
+              :ets.lookup(@config_table, :master_repl_offset)
+
             master_repl_id = "master_replid:#{master_repl_id}"
             master_repl_offset = "master_repl_offset:#{master_repl_offset}"
 
@@ -308,10 +340,10 @@ defmodule Server do
     wait_time_ms = String.to_integer(wait_time)
 
     # Check if there are pending writes since the last WAIT
-    case :ets.lookup(:config, :pending_writes) do
+    case :ets.lookup(@config_table, :pending_writes) do
       [{:pending_writes, false}] ->
         # No pending writes, return number of replicas immediately
-        replicas = :ets.match(:replicas, {:client, :"$1"}) |> List.flatten()
+        replicas = :ets.match(@replicas_table, {:client, :"$1"}) |> List.flatten()
         replica_count = length(replicas)
         ":#{replica_count}\r\n"
 
@@ -323,8 +355,8 @@ defmodule Server do
         ack_count = Wait.wait_for_replicas(wait_pid) |> dbg()
 
         # Clean up the wait process reference and reset pending writes
-        :ets.delete(:config, :current_wait_pid)
-        :ets.insert(:config, {:pending_writes, false})
+        :ets.delete(@config_table, :current_wait_pid)
+        :ets.insert(@config_table, {:pending_writes, false})
 
         ":#{ack_count}\r\n"
     end
@@ -340,18 +372,18 @@ defmodule Server do
   defp config_get([_, conf]) do
     case String.downcase(conf) do
       "dir" ->
-        [dir: dir] = :ets.lookup(:config, :dir)
+        [dir: dir] = :ets.lookup(@config_table, :dir)
         "*2\r\n$3\r\ndir\r\n$#{String.length(dir)}\r\n#{dir}\r\n"
 
       "dbfilename" ->
-        [dbfilename: name] = :ets.lookup(:config, :dbfilename)
+        [dbfilename: name] = :ets.lookup(@config_table, :dbfilename)
         "*2\r\n$10\r\ndbfilename\r\n$#{String.length(name)}\r\n#{name}\r\n"
     end
   end
 
   # KEYS
   defp handle_key([_, "*"]) do
-    keys = :ets.match(:redis_storage, {:"$1", :_})
+    keys = :ets.match(@storage_table, {:"$1", :_})
     key_list = List.flatten(keys)
 
     Enum.reduce(key_list, "*#{length(keys)}\r\n", fn value, acc ->
@@ -360,7 +392,7 @@ defmodule Server do
   end
 
   defp handle_key([_, key]) do
-    if :ets.lookup(:redis_storage, key) != [] do
+    if :ets.lookup(@storage_table, key) != [] do
       "*1\r\n$#{String.length(key)}\r\n#{key}\r\n"
     else
       return_nil()
@@ -369,9 +401,9 @@ defmodule Server do
 
   # TYPE
   defp handle_type([_, key]) do
-    case :ets.lookup(:redis_storage, key) do
+    case :ets.lookup(@storage_table, key) do
       [] ->
-        case :ets.lookup(:stream_storage, key) do
+        case :ets.lookup(@stream_table, key) do
           [] ->
             "+none\r\n"
 
@@ -399,7 +431,7 @@ defmodule Server do
           {value, nil}
       end
 
-    :ets.insert(:redis_storage, {key, value_data})
+    :ets.insert(@storage_table, {key, value_data})
     "+OK\r\n"
   end
 
@@ -418,7 +450,7 @@ defmodule Server do
   defp handle_set_options([], map), do: map
 
   defp handle_get([_, key]) do
-    case :ets.lookup(:redis_storage, key) do
+    case :ets.lookup(@storage_table, key) do
       [] ->
         return_nil()
 
@@ -431,7 +463,7 @@ defmodule Server do
         if current_time < expiry_time do
           "$#{String.length(value)}\r\n#{value}\r\n"
         else
-          :ets.delete(:redis_storage, key)
+          :ets.delete(@storage_table, key)
           return_nil()
         end
     end
@@ -456,7 +488,7 @@ defmodule Server do
   defp master?(), do: !replica?()
 
   defp replica?() do
-    case :ets.lookup(:config, :is_replica) do
+    case :ets.lookup(@config_table, :is_replica) do
       [] -> false
       [is_replica: true] -> true
     end
@@ -472,9 +504,9 @@ defmodule Server do
   defp propagate(command, command_binary) do
     if master?() and needs_propagation?(command) do
       # Mark that we have pending writes
-      :ets.insert(:config, {:pending_writes, true})
+      :ets.insert(@config_table, {:pending_writes, true})
 
-      clients = :ets.match(:replicas, {:client, :"$1"})
+      clients = :ets.match(@replicas_table, {:client, :"$1"})
 
       clients
       |> List.flatten()
@@ -493,7 +525,7 @@ defmodule Server do
 
   def update_offset(command, command_binary) do
     if needs_offset_update?(command),
-      do: :ets.update_counter(:config, :offset, byte_size(command_binary))
+      do: :ets.update_counter(@config_table, :offset, byte_size(command_binary))
   end
 
   defp parse_arguments() do
