@@ -28,9 +28,6 @@ defmodule Server do
     :ets.insert(@config_table, {:port, port})
     :ets.insert(@config_table, {:offset, 0})
     :ets.insert(@config_table, {:pending_writes, false})
-    # TODO: this doesn't handle stream-key value.
-    # I think we need to handle this in {"stream-key", "last-entry-id"} format
-    # :ets.insert(@config_table, {:last_stream_entry, {0, 0}})
 
     :ets.new(@storage_table, [
       :set,
@@ -170,6 +167,7 @@ defmodule Server do
   def handle_command(command, data) do
     case command do
       "xadd" -> handle_xadd(data)
+      "xrange" -> handle_xrange(data)
       "replconf" -> handle_repl_conf(data)
       "psync" -> handle_psync(data)
       "info" -> handle_info(data)
@@ -199,28 +197,78 @@ defmodule Server do
       [ms, "*"] ->
         ms = String.to_integer(ms)
 
-        case :ets.match_object(@config_table, {{:last_stream_entry, stream_key}, {ms, :_}}) do
+        match =
+          :ets.select_reverse(
+            @stream_table,
+            [
+              {
+                {
+                  # id
+                  {stream_key, {ms, :"$1"}},
+                  # value
+                  :"$2"
+                },
+                [],
+                [:"$$"]
+              }
+            ],
+            # limit
+            1
+          )
+
+        case match do
           [] ->
             # 0-0 already exists, so start 0-1
             id = if ms == 0, do: "0-1", else: "#{ms}-0"
             insert_stream(stream_key, id, rest)
 
-          [{_, {ms, last_offset}}] ->
+          {[last_entry], _} ->
+            # [1, %{"temperature" => "69"}]
+            [last_offset, _] = last_entry
             insert_stream(stream_key, "#{ms}-#{last_offset + 1}", rest)
+
+          :"$end_of_table" ->
+            # 0-0 already exists, so start 0-1
+            id = if ms == 0, do: "0-1", else: "#{ms}-0"
+            insert_stream(stream_key, id, rest)
         end
 
       # "something-something"
       _ ->
-        last_entry_id =
-          case :ets.match_object(@config_table, {{:last_stream_entry, stream_key}, {:_, :_}}) do
-            [] -> {0, 0}
-            [{_, {ms, offset}}] -> {ms, offset}
-          end
+        match =
+          :ets.select_reverse(
+            @stream_table,
+            [
+              {
+                {
+                  # id
+                  {stream_key, :"$1"},
+                  # value
+                  :"$2"
+                },
+                [],
+                [:"$$"]
+              }
+            ],
+            # limit
+            1
+          )
 
-        if valid_id?(id_to_tuple(id), last_entry_id) do
-          insert_stream(stream_key, id, rest)
-        else
-          xadd_id_error()
+        case match do
+          [] ->
+            insert_stream(stream_key, id, rest)
+
+          {[last_entry], _} ->
+            [last_entry_id, _] = last_entry
+
+            if valid_id?(id_to_tuple(id), last_entry_id) do
+              insert_stream(stream_key, id, rest)
+            else
+              xadd_id_error()
+            end
+
+          :"$end_of_table" ->
+            insert_stream(stream_key, id, rest)
         end
     end
   end
@@ -236,17 +284,14 @@ defmodule Server do
   defp insert_stream(stream_key, id, rest) do
     kv = get_kv_map(rest)
     id_tuple = id_to_tuple(id)
-    # {stream_key, {id_num, offset_num}, kv}
-    :ets.insert(@stream_table, {stream_key, id_tuple, kv})
-
-    # Add last stream entry's id
-    # Use insert since :config is `:set` table
-    :ets.insert(@config_table, {{:last_stream_entry, stream_key}, id_tuple})
+    # {{stream_key, {id_num, offset_num}}, kv}
+    # key -> stream_key, {id_num, offset}
+    :ets.insert(@stream_table, {{stream_key, id_tuple}, kv})
 
     "$#{String.length(id)}\r\n#{id}\r\n"
   end
 
-  defp id_to_tuple(id) do
+  defp id_to_tuple(id) when is_binary(id) do
     String.split(id, "-")
     |> then(fn [last_ms, last_offset] ->
       {String.to_integer(last_ms), String.to_integer(last_offset)}
@@ -261,6 +306,10 @@ defmodule Server do
     |> Enum.reduce(%{}, fn [_, key, _, value], map ->
       Map.put(map, key, value)
     end)
+  end
+
+  # XRANGE
+  defp handle_xrange([_, stream_key, _, start_id, _, end_id]) do
   end
 
   # REPLCONF
@@ -403,7 +452,7 @@ defmodule Server do
   defp handle_type([_, key]) do
     case :ets.lookup(@storage_table, key) do
       [] ->
-        case :ets.lookup(@stream_table, key) do
+        case :ets.match_object(@stream_table, {{key, :_}, :_}) do
           [] ->
             "+none\r\n"
 
