@@ -185,15 +185,15 @@ defmodule Server do
   end
 
   # XADD(streams)
-  def handle_xadd([_, _stream_key, _, "*" | rest]) do
-    _kv = get_kv_map(rest)
-    "-ERR \"not implemeted yet\"\r\n"
+  defp handle_xadd([_, stream_key, _, "*" | rest]) do
+    prefix_id = DateTime.utc_now() |> DateTime.to_unix(:millisecond)
+    handle_xadd([nil, stream_key, nil, "#{prefix_id}-*" | rest])
   end
 
-  def handle_xadd([_, _, _, "0-0" | _rest]),
+  defp handle_xadd([_, _, _, "0-0" | _rest]),
     do: "-ERR The ID specified in XADD must be greater than 0-0\r\n"
 
-  def handle_xadd([_, stream_key, _, id | rest]) do
+  defp handle_xadd([_, stream_key, _, id | rest]) do
     case String.split(id, "-") do
       # "something-*"
       [ms, "*"] ->
@@ -233,7 +233,7 @@ defmodule Server do
     end
   end
 
-  def insert_stream(stream_key, id, rest) do
+  defp insert_stream(stream_key, id, rest) do
     kv = get_kv_map(rest)
     id_tuple = id_to_tuple(id)
     # {stream_key, {id_num, offset_num}, kv}
