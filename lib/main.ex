@@ -197,27 +197,19 @@ defmodule Server do
       [ms, "*"] ->
         ms = String.to_integer(ms)
 
-        match =
+        # :ets.select takes in match spec as [{pattern, guard, result}]
+        # Here, the pattern is { {stream_key, {:"$1", :"$2"}}, :"$3" }
+        # guard: []
+        # result: [:"$$"] which lets your return every parameters
+        matches =
           :ets.select_reverse(
             @stream_table,
-            [
-              {
-                {
-                  # id
-                  {stream_key, {ms, :"$1"}},
-                  # value
-                  :"$2"
-                },
-                [],
-                [:"$$"]
-              }
-            ],
-            # limit
+            [{{{stream_key, {ms, :"$1"}}, :"$2"}, [], [:"$$"]}],
             1
           )
 
-        case match do
-          [] ->
+        case matches do
+          match when match in [:"$end_of_table", []] ->
             # 0-0 already exists, so start 0-1
             id = if ms == 0, do: "0-1", else: "#{ms}-0"
             insert_stream(stream_key, id, rest)
@@ -226,36 +218,19 @@ defmodule Server do
             # [1, %{"temperature" => "69"}]
             [last_offset, _] = last_entry
             insert_stream(stream_key, "#{ms}-#{last_offset + 1}", rest)
-
-          :"$end_of_table" ->
-            # 0-0 already exists, so start 0-1
-            id = if ms == 0, do: "0-1", else: "#{ms}-0"
-            insert_stream(stream_key, id, rest)
         end
 
       # "something-something"
       _ ->
-        match =
+        matches =
           :ets.select_reverse(
             @stream_table,
-            [
-              {
-                {
-                  # id
-                  {stream_key, :"$1"},
-                  # value
-                  :"$2"
-                },
-                [],
-                [:"$$"]
-              }
-            ],
-            # limit
+            [{{{stream_key, :"$1"}, :"$2"}, [], [:"$$"]}],
             1
           )
 
-        case match do
-          [] ->
+        case matches do
+          match when match in [:"$end_of_table", []] ->
             insert_stream(stream_key, id, rest)
 
           {[last_entry], _} ->
@@ -266,9 +241,6 @@ defmodule Server do
             else
               xadd_id_error()
             end
-
-          :"$end_of_table" ->
-            insert_stream(stream_key, id, rest)
         end
     end
   end
@@ -310,11 +282,81 @@ defmodule Server do
 
   # XRANGE
   defp handle_xrange([_, stream_key, _, start_id, _, end_id]) do
+    {start_ms, start_offset} =
+      if String.contains?(start_id, "-"),
+        do: id_to_tuple(start_id),
+        else: {String.to_integer(start_id), 0}
+
+    {end_ms, end_offset, end_offset_specified?} =
+      if String.contains?(end_id, "-") do
+        {ms, offset} = id_to_tuple(end_id)
+        {ms, offset, true}
+      else
+        {String.to_integer(end_id), 0, false}
+      end
+
+    # Build end condition based on whether offset was specified
+    end_condition =
+      if end_offset_specified? do
+        # Include entries <= end_ms-end_offset
+        {:orelse, {:<, :"$1", end_ms},
+         {:andalso, {:==, :"$1", end_ms}, {:"=<", :"$2", end_offset}}}
+      else
+        # Include all entries <= end_ms (any offset)
+        {:"=<", :"$1", end_ms}
+      end
+
+    matches =
+      :ets.select(
+        @stream_table,
+        [
+          {
+            {{stream_key, {:"$1", :"$2"}}, :"$3"},
+            # Filter entries within [start_id, end_id] (inclusive)
+            # Since Redis IDs are {ms}-{offset}, we need to check both components:
+            # 1. entry_id >= start_id: (ms > start_ms) OR (ms == start_ms AND offset >= start_offset)
+            # 2. entry_id <= end_id: (ms < end_ms) OR (ms == end_ms AND offset <= end_offset)
+            [
+              {:andalso,
+               {:orelse, {:>, :"$1", start_ms},
+                {:andalso, {:==, :"$1", start_ms}, {:>=, :"$2", start_offset}}}, end_condition}
+            ],
+            [:"$$"]
+          }
+        ]
+      )
+
+    case matches do
+      match when match in [:"$end_of_table", []] -> return_nil()
+      _ -> encode_xrange_result(matches)
+    end
+  end
+
+  defp encode_xrange_result(list) do
+    init = "*#{length(list)}\r\n"
+
+    Enum.reduce(list, init, fn entry, acc ->
+      [ms, offset, kv] = entry
+      kv_size = map_size(kv) * 2
+      id = "#{ms}-#{offset}"
+
+      encoded_map =
+        Map.to_list(kv)
+        |> Enum.reduce("", fn {key, value}, acc ->
+          acc <> "$#{String.length(key)}\r\n#{key}\r\n$#{String.length(value)}\r\n#{value}\r\n"
+        end)
+
+      acc <>
+        "*2\r\n" <>
+        "$#{String.length(id)}\r\n#{id}\r\n" <>
+        "*#{kv_size}\r\n" <>
+        encoded_map
+    end)
   end
 
   # REPLCONF
-  defp handle_repl_conf([_, "listening-port", _, _port]), do: "+OK\r\n"
-  defp handle_repl_conf([_, "capa", _, "psync2"]), do: "+OK\r\n"
+  defp handle_repl_conf([_, "listening-port", _, _port]), do: return_ok()
+  defp handle_repl_conf([_, "capa", _, "psync2"]), do: return_ok()
 
   defp handle_repl_conf([_, "GETACK", _, "*"]) do
     [offset: offset] = :ets.lookup(@config_table, :offset)
@@ -481,7 +523,7 @@ defmodule Server do
       end
 
     :ets.insert(@storage_table, {key, value_data})
-    "+OK\r\n"
+    return_ok()
   end
 
   defp handle_set_options(["$" <> _, name, "$" <> _, value | rest] = _options, map) do
@@ -533,6 +575,7 @@ defmodule Server do
   end
 
   defp return_nil(), do: "$-1\r\n"
+  defp return_ok(), do: "+OK\r\n"
 
   defp master?(), do: !replica?()
 
