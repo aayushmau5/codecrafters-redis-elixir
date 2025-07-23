@@ -168,6 +168,7 @@ defmodule Server do
     case command do
       "xadd" -> handle_xadd(data)
       "xrange" -> handle_xrange(data)
+      "xread" -> handle_xread(data)
       "replconf" -> handle_repl_conf(data)
       "psync" -> handle_psync(data)
       "info" -> handle_info(data)
@@ -433,6 +434,57 @@ defmodule Server do
         "$#{String.length(id)}\r\n#{id}\r\n" <>
         "*#{kv_size}\r\n" <>
         encoded_map
+    end)
+  end
+
+  # XREAD
+  defp handle_xread([_, "streams", _, stream_key, _, id]) do
+    # keys which are more than id(exclusive)
+    {ms, offset} = id_to_tuple(id)
+
+    matches =
+      :ets.select(@stream_table, [
+        {
+          {{stream_key, {:"$1", :"$2"}}, :"$3"},
+          [
+            {
+              :orelse,
+              {:>, :"$1", ms},
+              {:>, :"$2", offset}
+            }
+          ],
+          [:"$$"]
+        }
+      ])
+
+    case matches do
+      match when match in [:"$end_of_table", []] -> return_nil()
+      _ -> encode_xread_result(stream_key, matches)
+    end
+  end
+
+  defp encode_xread_result(stream_key, list) do
+    # [
+    #   [1753214038449, 7, %{"temperature" => "80"}],
+    #   [1753241920830, 5, %{"temperature" => "80"}],
+    #   [1753241920830, 6, %{"temperature" => "80"}],
+    #   [1753243101948, 10, %{"temperature" => "80"}]
+    # ]
+    list_size = length(list)
+    encoded_stream_key = "$#{String.length(stream_key)}\r\n#{stream_key}"
+    init = "*1\r\n*2\r\n#{encoded_stream_key}\r\n*#{list_size}\r\n"
+
+    Enum.reduce(list, init, fn [ms, offset, kv], acc ->
+      id = "#{ms}-#{offset}"
+
+      kv_list = kv |> Enum.map(&Tuple.to_list/1) |> List.flatten()
+
+      encoded_kv =
+        Enum.reduce(kv_list, "*#{length(kv_list)}\r\n", fn x, acc ->
+          acc <> "$#{String.length(x)}\r\n#{x}\r\n"
+        end)
+
+      acc <> "*2\r\n$#{String.length(id)}\r\n#{id}\r\n" <> encoded_kv
     end)
   end
 
