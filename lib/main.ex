@@ -438,54 +438,90 @@ defmodule Server do
   end
 
   # XREAD
+  defp handle_xread([
+         _,
+         "streams",
+         _,
+         first_stream_key,
+         _,
+         second_stream_key,
+         _,
+         first_id,
+         _,
+         second_id
+       ]) do
+    stream_configs = [
+      {first_stream_key, first_id},
+      {second_stream_key, second_id}
+    ]
+
+    stream_results =
+      Enum.map(stream_configs, fn {stream_key, id} ->
+        {stream_key, get_stream_matches(stream_key, id)}
+      end)
+
+    encode_multi_stream_result(stream_results)
+  end
+
   defp handle_xread([_, "streams", _, stream_key, _, id]) do
-    # keys which are more than id(exclusive)
-    {ms, offset} = id_to_tuple(id)
-
-    matches =
-      :ets.select(@stream_table, [
-        {
-          {{stream_key, {:"$1", :"$2"}}, :"$3"},
-          [
-            {
-              :orelse,
-              {:>, :"$1", ms},
-              {:>, :"$2", offset}
-            }
-          ],
-          [:"$$"]
-        }
-      ])
-
-    case matches do
+    case get_stream_matches(stream_key, id) do
       match when match in [:"$end_of_table", []] -> return_nil()
-      _ -> encode_xread_result(stream_key, matches)
+      matches -> encode_xread_result(stream_key, matches)
     end
   end
 
-  defp encode_xread_result(stream_key, list) do
-    # [
-    #   [1753214038449, 7, %{"temperature" => "80"}],
-    #   [1753241920830, 5, %{"temperature" => "80"}],
-    #   [1753241920830, 6, %{"temperature" => "80"}],
-    #   [1753243101948, 10, %{"temperature" => "80"}]
-    # ]
-    list_size = length(list)
+  defp get_stream_matches(stream_key, id) do
+    {ms, offset} = id_to_tuple(id)
+
+    :ets.select(@stream_table, [
+      {
+        {{stream_key, {:"$1", :"$2"}}, :"$3"},
+        [
+          {
+            :orelse,
+            {:>, :"$1", ms},
+            {:>, :"$2", offset}
+          }
+        ],
+        [:"$$"]
+      }
+    ])
+  end
+
+  defp encode_xread_result(stream_key, matches) do
+    "*1\r\n" <> encode_single_stream_for_multi(stream_key, matches)
+  end
+
+  defp encode_multi_stream_result(stream_results) do
+    "*2\r\n" <>
+      Enum.map_join(stream_results, "", fn {stream_key, matches} ->
+        encode_single_stream_for_multi(stream_key, matches)
+      end)
+  end
+
+  defp encode_single_stream_for_multi(stream_key, matches) do
+    list_size = length(matches)
     encoded_stream_key = "$#{String.length(stream_key)}\r\n#{stream_key}"
-    init = "*1\r\n*2\r\n#{encoded_stream_key}\r\n*#{list_size}\r\n"
+    stream_header = "*2\r\n#{encoded_stream_key}\r\n*#{list_size}\r\n"
 
-    Enum.reduce(list, init, fn [ms, offset, kv], acc ->
-      id = "#{ms}-#{offset}"
+    matches_encoded =
+      Enum.map_join(matches, "", fn [ms, offset, kv] ->
+        encode_stream_entry(ms, offset, kv)
+      end)
 
-      kv_list = kv |> Enum.map(&Tuple.to_list/1) |> List.flatten()
+    stream_header <> matches_encoded
+  end
 
-      encoded_kv =
-        Enum.reduce(kv_list, "*#{length(kv_list)}\r\n", fn x, acc ->
-          acc <> "$#{String.length(x)}\r\n#{x}\r\n"
-        end)
+  defp encode_stream_entry(ms, offset, kv) do
+    id = "#{ms}-#{offset}"
+    kv_list = kv |> Enum.map(&Tuple.to_list/1) |> List.flatten()
 
-      acc <> "*2\r\n$#{String.length(id)}\r\n#{id}\r\n" <> encoded_kv
-    end)
+    encoded_kv =
+      Enum.reduce(kv_list, "*#{length(kv_list)}\r\n", fn x, acc ->
+        acc <> "$#{String.length(x)}\r\n#{x}\r\n"
+      end)
+
+    "*2\r\n$#{String.length(id)}\r\n#{id}\r\n" <> encoded_kv
   end
 
   # REPLCONF
