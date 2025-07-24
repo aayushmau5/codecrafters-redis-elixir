@@ -165,24 +165,32 @@ defmodule Server do
   end
 
   def handle_command(command, data) do
-    case command do
-      "xadd" -> handle_xadd(data)
-      "xrange" -> handle_xrange(data)
-      "xread" -> handle_xread(data)
-      "replconf" -> handle_repl_conf(data)
-      "psync" -> handle_psync(data)
-      "info" -> handle_info(data)
-      "wait" -> handle_wait(data)
-      "config" -> handle_config(data)
-      "keys" -> handle_key(data)
-      "type" -> handle_type(data)
-      "multi" -> handle_multi(data)
-      "exec" -> handle_exec(data)
-      "set" -> handle_set(data)
-      "incr" -> handle_incr(data)
-      "get" -> handle_get(data)
-      "echo" -> handle_echo(data)
-      "ping" -> handle_ping(data)
+    # If in transaction, queue up commands
+    if Process.get(:in_transaction) && should_queue_command?(command) do
+      queued = Process.get(:queued_commands)
+      Process.put(:queued_commands, [{command, data} | queued])
+      "+QUEUED\r\n"
+    else
+      # Non-transaction, handle commands(in request-response manner)
+      case command do
+        "xadd" -> handle_xadd(data)
+        "xrange" -> handle_xrange(data)
+        "xread" -> handle_xread(data)
+        "replconf" -> handle_repl_conf(data)
+        "psync" -> handle_psync(data)
+        "info" -> handle_info(data)
+        "wait" -> handle_wait(data)
+        "config" -> handle_config(data)
+        "keys" -> handle_key(data)
+        "type" -> handle_type(data)
+        "multi" -> handle_multi(data)
+        "exec" -> handle_exec(data)
+        "set" -> handle_set(data)
+        "incr" -> handle_incr(data)
+        "get" -> handle_get(data)
+        "echo" -> handle_echo(data)
+        "ping" -> handle_ping(data)
+      end
     end
   end
 
@@ -771,13 +779,26 @@ defmodule Server do
   end
 
   # MULTI
-  def handle_multi(_data) do
+  def handle_multi(_) do
+    # Using process dictionary to store transaction details and queued up commands
+    Process.put(:in_transaction, true)
+    Process.put(:queued_commands, [])
     return_ok()
   end
 
   # EXEC
   def handle_exec(_data) do
-    "-ERR EXEC without MULTI\r\n"
+    case Process.get(:in_transaction) do
+      true ->
+        # queued_commands = Process.get(:queued_commands)
+        # dbg(queued_commands)
+        Process.delete(:in_transaction)
+        Process.delete(:queued_commands)
+        "*0\r\n"
+
+      nil ->
+        "-ERR EXEC without MULTI\r\n"
+    end
   end
 
   # SET
@@ -927,6 +948,8 @@ defmodule Server do
   end
 
   defp is_replica_connection?(command), do: master?() and command == "psync"
+
+  defp should_queue_command?(command), do: command not in ["multi", "exec", "discard", "ping"]
 end
 
 defmodule CLI do
