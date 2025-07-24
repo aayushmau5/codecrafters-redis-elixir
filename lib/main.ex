@@ -272,8 +272,10 @@ defmodule Server do
     # key -> stream_key, {id_num, offset}
     :ets.insert(@stream_table, {{stream_key, id_tuple}, kv})
 
+    dbg(:ets.lookup(@config_table, :current_block_pid))
+
     case :ets.lookup(@config_table, :current_block_pid) do
-      [{:current_block_pid, block_pid}] when is_pid(block_pid) ->
+      [current_block_pid: block_pid] when is_pid(block_pid) ->
         if Process.alive?(block_pid) do
           Block.add_stream(block_pid, stream_key, id)
         end

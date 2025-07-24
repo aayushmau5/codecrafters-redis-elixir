@@ -20,7 +20,7 @@ defmodule Block do
     timeout_ms = Keyword.get(args, :timeout_ms)
     required_stream_key = Keyword.get(args, :stream_key)
     required_id = Keyword.get(args, :id)
-    :ets.insert(@config_table, {:current_block_pid, self()})
+    :ets.insert(@config_table, {:current_block_pid, self()}) |> dbg()
 
     {:ok,
      %{
