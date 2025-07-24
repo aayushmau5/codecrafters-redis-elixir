@@ -176,6 +176,7 @@ defmodule Server do
       "config" -> handle_config(data)
       "keys" -> handle_key(data)
       "type" -> handle_type(data)
+      "multi" -> handle_multi(data)
       "set" -> handle_set(data)
       "incr" -> handle_incr(data)
       "get" -> handle_get(data)
@@ -766,6 +767,11 @@ defmodule Server do
       [{^key, {_value, _}}] ->
         "+string\r\n"
     end
+  end
+
+  # MULTI
+  def handle_multi(_data) do
+    return_ok()
   end
 
   # SET
