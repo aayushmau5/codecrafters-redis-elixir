@@ -34,27 +34,39 @@ defmodule Block do
 
   @impl true
   def handle_call(:block, from, %{timeout_ms: timeout_ms} = state) do
-    timer_ref = Process.send_after(self(), :timeout, timeout_ms)
+    timer_ref = if timeout_ms != 0, do: Process.send_after(self(), :timeout, timeout_ms)
     {:noreply, %{state | timer_ref: timer_ref, caller: from}}
   end
 
   @impl true
   def handle_cast({:stream, stream_key, id}, %{caller: caller, timer_ref: timer_ref} = state) do
-    {required_ms, required_offset} = id_to_tuple(state.required_id)
-    {ms, offset} = id_to_tuple(id)
+    if state.required_id != nil do
+      {required_ms, required_offset} = id_to_tuple(state.required_id)
+      {ms, offset} = id_to_tuple(id)
 
-    cond do
-      stream_key == state.required_stream_key ->
-        if ms >= required_ms and offset >= required_offset do
+      cond do
+        stream_key == state.required_stream_key ->
+          if ms >= required_ms and offset >= required_offset do
+            if timer_ref, do: Process.cancel_timer(timer_ref)
+            if caller, do: GenServer.reply(caller, {:ok, {stream_key, id}})
+            {:noreply, %{state | caller: nil, timer_ref: nil}}
+          else
+            {:noreply, state}
+          end
+
+        true ->
+          {:noreply, state}
+      end
+    else
+      cond do
+        stream_key == state.required_stream_key ->
           if timer_ref, do: Process.cancel_timer(timer_ref)
           if caller, do: GenServer.reply(caller, {:ok, {stream_key, id}})
           {:noreply, %{state | caller: nil, timer_ref: nil}}
-        else
-          {:noreply, state}
-        end
 
-      true ->
-        {:noreply, state}
+        true ->
+          {:noreply, state}
+      end
     end
   end
 

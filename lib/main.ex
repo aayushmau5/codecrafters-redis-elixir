@@ -448,6 +448,27 @@ defmodule Server do
   end
 
   # XREAD
+  defp handle_xread([_, "block", _, block_time, _, "streams", _, stream_key, _, "$"]) do
+    {:ok, pid} =
+      Block.start_link(timeout_ms: String.to_integer(block_time), stream_key: stream_key)
+
+    response =
+      case Block.wait_for_stream(pid) do
+        {:ok, {_, new_id}} ->
+          case get_stream_match(stream_key, new_id) do
+            match when match in [:"$end_of_table", []] -> return_nil()
+            matches -> encode_xread_result(stream_key, matches)
+          end
+
+        {:error, :nostream} ->
+          return_nil()
+      end
+
+    :ets.delete(@config_table, :current_block_pid)
+
+    response
+  end
+
   defp handle_xread([_, "block", _, block_time, _, "streams", _, stream_key, _, id]) do
     {:ok, pid} =
       Block.start_link(timeout_ms: String.to_integer(block_time), stream_key: stream_key, id: id)
@@ -509,6 +530,24 @@ defmodule Server do
             :orelse,
             {:>, :"$1", ms},
             {:>, :"$2", offset}
+          }
+        ],
+        [:"$$"]
+      }
+    ])
+  end
+
+  defp get_stream_match(stream_key, id) do
+    {ms, offset} = id_to_tuple(id)
+
+    :ets.select(@stream_table, [
+      {
+        {{stream_key, {:"$1", :"$2"}}, :"$3"},
+        [
+          {
+            :andalso,
+            {:==, :"$1", ms},
+            {:==, :"$2", offset}
           }
         ],
         [:"$$"]
