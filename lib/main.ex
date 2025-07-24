@@ -470,6 +470,32 @@ defmodule Server do
     response
   end
 
+  # Infinite block time
+  defp handle_xread([_, "block", _, "0", _, "streams", _, stream_key, _, id]) do
+    case get_stream_match(stream_key, id) do
+      match when match in [:"$end_of_table", []] ->
+        {:ok, pid} =
+          Block.start_link(
+            timeout_ms: 0,
+            stream_key: stream_key,
+            id: id
+          )
+
+        case Block.wait_for_stream(pid) do
+          {:ok, _} ->
+            :ets.delete(@config_table, :current_block_pid)
+            handle_xread([nil, "streams", nil, stream_key, nil, id])
+
+          {:error, :nostream} ->
+            :ets.delete(@config_table, :current_block_pid)
+            return_nil()
+        end
+
+      match ->
+        encode_xread_result(stream_key, match)
+    end
+  end
+
   defp handle_xread([_, "block", _, block_time, _, "streams", _, stream_key, _, id]) do
     {:ok, pid} =
       Block.start_link(timeout_ms: String.to_integer(block_time), stream_key: stream_key, id: id)
