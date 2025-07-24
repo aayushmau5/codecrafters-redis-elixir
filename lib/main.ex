@@ -261,6 +261,16 @@ defmodule Server do
     # key -> stream_key, {id_num, offset}
     :ets.insert(@stream_table, {{stream_key, id_tuple}, kv})
 
+    case :ets.lookup(@config_table, :current_block_pid) do
+      [{:current_block_pid, block_pid}] when is_pid(block_pid) ->
+        if Process.alive?(block_pid) do
+          Block.add_stream(block_pid, stream_key, id)
+        end
+
+      _ ->
+        :ok
+    end
+
     "$#{String.length(id)}\r\n#{id}\r\n"
   end
 
@@ -438,6 +448,24 @@ defmodule Server do
   end
 
   # XREAD
+  defp handle_xread([_, "block", _, block_time, _, "streams", _, stream_key, _, id]) do
+    {:ok, pid} =
+      Block.start_link(timeout_ms: String.to_integer(block_time), stream_key: stream_key, id: id)
+
+    response =
+      case Block.wait_for_stream(pid) do
+        {:ok, _} ->
+          handle_xread([nil, "streams", nil, stream_key, nil, id])
+
+        {:error, :nostream} ->
+          return_nil()
+      end
+
+    :ets.delete(@config_table, :current_block_pid)
+
+    response
+  end
+
   defp handle_xread([
          _,
          "streams",
