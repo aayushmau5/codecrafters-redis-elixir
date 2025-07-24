@@ -177,6 +177,7 @@ defmodule Server do
       "keys" -> handle_key(data)
       "type" -> handle_type(data)
       "set" -> handle_set(data)
+      "incr" -> handle_incr(data)
       "get" -> handle_get(data)
       "echo" -> handle_echo(data)
       "ping" -> handle_ping(data)
@@ -662,7 +663,7 @@ defmodule Server do
     end
   end
 
-  # WAIT command
+  # WAIT
   defp handle_wait([_, num_replicas, _, wait_time]) do
     required_replicas = String.to_integer(num_replicas)
     wait_time_ms = String.to_integer(wait_time)
@@ -744,6 +745,7 @@ defmodule Server do
     end
   end
 
+  # SET
   # ["$3", "foo", "$4", "bar"]
   # ["$3", "foo", "$4", "bar", "$2", "px", "$3", "100"]
   defp handle_set([_, key, _, value | rest]) do
@@ -777,6 +779,27 @@ defmodule Server do
 
   defp handle_set_options([], map), do: map
 
+  # INCR
+  defp handle_incr([_, key]) do
+    case :ets.lookup(@storage_table, key) do
+      [] ->
+        :ets.insert(@storage_table, {key, 1})
+        ":1\r\n"
+
+      [{^key, {value, _}}] ->
+        case Integer.parse(value) do
+          {value, ""} ->
+            value = value + 1
+            :ets.insert(@storage_table, {key, value})
+            ":#{value}\r\n"
+
+          :error ->
+            "-ERR value is not an integer or out of range\r\n"
+        end
+    end
+  end
+
+  # GET
   defp handle_get([_, key]) do
     case :ets.lookup(@storage_table, key) do
       [] ->
@@ -797,10 +820,12 @@ defmodule Server do
     end
   end
 
+  # ECHO
   defp handle_echo([_, message]) do
     "$#{String.length(message)}\r\n#{message}\r\n"
   end
 
+  # PING
   defp handle_ping(data) do
     case data do
       ["$" <> _len, pong] ->
