@@ -472,7 +472,7 @@ defmodule Server do
 
   # Infinite block time
   defp handle_xread([_, "block", _, "0", _, "streams", _, stream_key, _, id]) do
-    case get_stream_match(stream_key, id) do
+    case get_stream_matches(stream_key, id) do
       match when match in [:"$end_of_table", []] ->
         {:ok, pid} =
           Block.start_link(
