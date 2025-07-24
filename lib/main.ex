@@ -177,6 +177,7 @@ defmodule Server do
       "keys" -> handle_key(data)
       "type" -> handle_type(data)
       "multi" -> handle_multi(data)
+      "exec" -> handle_exec(data)
       "set" -> handle_set(data)
       "incr" -> handle_incr(data)
       "get" -> handle_get(data)
@@ -772,6 +773,11 @@ defmodule Server do
   # MULTI
   def handle_multi(_data) do
     return_ok()
+  end
+
+  # EXEC
+  def handle_exec(_data) do
+    "-ERR EXEC without MULTI\r\n"
   end
 
   # SET
