@@ -783,14 +783,14 @@ defmodule Server do
   defp handle_incr([_, key]) do
     case :ets.lookup(@storage_table, key) do
       [] ->
-        :ets.insert(@storage_table, {key, 1})
+        :ets.insert(@storage_table, {key, {"#{1}", nil}})
         ":1\r\n"
 
-      [{^key, {value, _}}] ->
+      [{^key, {value, extra}}] ->
         case Integer.parse(value) do
           {value, ""} ->
             value = value + 1
-            :ets.insert(@storage_table, {key, value})
+            :ets.insert(@storage_table, {key, {"#{value}", extra}})
             ":#{value}\r\n"
 
           :error ->
