@@ -34,15 +34,25 @@ defmodule Block do
 
   @impl true
   def handle_call(:block, from, %{timeout_ms: timeout_ms} = state) do
-    timer_ref = if timeout_ms != 0, do: Process.send_after(self(), :timeout, timeout_ms)
+    dbg("handling block")
+
+    timer_ref =
+      if timeout_ms != 0, do: Process.send_after(self(), :timeout, timeout_ms), else: nil
+
+    dbg(timer_ref)
+
     {:noreply, %{state | timer_ref: timer_ref, caller: from}}
   end
 
   @impl true
   def handle_cast({:stream, stream_key, id}, %{caller: caller, timer_ref: timer_ref} = state) do
+    dbg(state.required_id)
+
     if state.required_id != nil do
       {required_ms, required_offset} = id_to_tuple(state.required_id)
       {ms, offset} = id_to_tuple(id)
+
+      dbg({ms, required_ms, offset, required_offset})
 
       cond do
         stream_key == state.required_stream_key ->
@@ -72,6 +82,8 @@ defmodule Block do
 
   @impl true
   def handle_info(:timeout, %{caller: caller} = state) do
+    dbg("timed out")
+
     if caller do
       GenServer.reply(caller, {:error, :nostream})
     end
