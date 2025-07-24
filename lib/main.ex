@@ -458,7 +458,7 @@ defmodule Server do
         {:ok, {_, new_id}} ->
           case get_stream_match(stream_key, new_id) do
             match when match in [:"$end_of_table", []] -> return_nil()
-            matches -> encode_xread_result(stream_key, matches)
+            match -> encode_xread_result(stream_key, match)
           end
 
         {:error, :nostream} ->
@@ -474,18 +474,15 @@ defmodule Server do
     {:ok, pid} =
       Block.start_link(timeout_ms: String.to_integer(block_time), stream_key: stream_key, id: id)
 
-    response =
-      case Block.wait_for_stream(pid) do
-        {:ok, _} ->
-          handle_xread([nil, "streams", nil, stream_key, nil, id])
+    case Block.wait_for_stream(pid) do
+      {:ok, _} ->
+        :ets.delete(@config_table, :current_block_pid)
+        handle_xread([nil, "streams", nil, stream_key, nil, id])
 
-        {:error, :nostream} ->
-          return_nil()
-      end
-
-    :ets.delete(@config_table, :current_block_pid)
-
-    response
+      {:error, :nostream} ->
+        :ets.delete(@config_table, :current_block_pid)
+        return_nil()
+    end
   end
 
   defp handle_xread([
