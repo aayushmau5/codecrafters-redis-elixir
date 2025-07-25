@@ -828,21 +828,28 @@ defmodule Server do
   end
 
   # LPUSH
-  def handle_rpush([_, key, _, element]) do
+  def handle_rpush([_, key | elements]) do
+    elements = get_elements(elements)
+
     case :ets.lookup(@storage_table, key) do
       [] ->
-        :ets.insert(@storage_table, {key, {[element], nil}})
-        ":1\r\n"
+        :ets.insert(@storage_table, {key, {elements, nil}})
+        ":#{length(elements)}\r\n"
 
       [{^key, {value, _}}] ->
         if is_list(value) do
-          new_list = Enum.concat(value, [element])
+          new_list = Enum.concat(value, elements)
           :ets.insert(@storage_table, {key, {new_list, nil}})
           ":#{length(new_list)}\r\n"
         else
           "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
         end
     end
+  end
+
+  defp get_elements(elements) do
+    Enum.chunk_every(elements, 2)
+    |> Enum.map(fn [_, element] -> element end)
   end
 
   # SET
