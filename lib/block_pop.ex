@@ -20,14 +20,6 @@ defmodule BlockPop do
     timeout_ms = Keyword.get(args, :timeout_ms)
     required_key = Keyword.get(args, :key)
 
-    case :ets.lookup(@config_table, :waiting_blpop_pids) do
-      [] ->
-        :ets.insert(@config_table, {:waiting_blpop_pids, [self()]})
-
-      [waiting_blpop_pids: waiting_blpop_pids] ->
-        :ets.insert(@config_table, {:waiting_blpop_pids, waiting_blpop_pids ++ [self()]})
-    end
-
     {:ok,
      %{
        timeout_ms: timeout_ms,
@@ -39,6 +31,16 @@ defmodule BlockPop do
 
   @impl true
   def handle_call(:block, from, %{timeout_ms: timeout_ms} = state) do
+    case :ets.lookup(@config_table, :waiting_blpop_pids) do
+      [] ->
+        :ets.insert(@config_table, {:waiting_blpop_pids, [self()]})
+
+      [waiting_blpop_pids: waiting_blpop_pids] ->
+        dbg(waiting_blpop_pids)
+        :ets.insert(@config_table, {:waiting_blpop_pids, waiting_blpop_pids ++ [self()]})
+        dbg(waiting_blpop_pids ++ [self()])
+    end
+
     timer_ref =
       if timeout_ms != 0, do: Process.send_after(self(), :timeout, timeout_ms), else: nil
 
@@ -48,8 +50,19 @@ defmodule BlockPop do
   @impl true
   def handle_cast({:push, key}, %{caller: caller, timer_ref: timer_ref} = state) do
     if state.required_key == key do
+      # Remove from waiting list when we're done
+      case :ets.lookup(@config_table, :waiting_blpop_pids) do
+        [waiting_blpop_pids: pids] ->
+          updated_pids = List.delete(pids, self()) |> dbg()
+          :ets.insert(@config_table, {:waiting_blpop_pids, updated_pids})
+
+        [] ->
+          :ok
+      end
+
       if timer_ref, do: Process.cancel_timer(timer_ref)
       if caller, do: GenServer.reply(caller, {:ok, key})
+
       {:noreply, %{state | caller: nil, timer_ref: nil}}
     else
       {:noreply, state}
@@ -62,6 +75,16 @@ defmodule BlockPop do
 
     if caller do
       GenServer.reply(caller, {:error, :nopush})
+
+      # Remove from waiting list on timeout
+      case :ets.lookup(@config_table, :waiting_blpop_pids) do
+        [waiting_blpop_pids: pids] ->
+          updated_pids = List.delete(pids, self())
+          :ets.insert(@config_table, {:waiting_blpop_pids, updated_pids})
+
+        [] ->
+          :ok
+      end
     end
 
     {:noreply, %{state | caller: nil, timer_ref: nil}}

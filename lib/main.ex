@@ -910,8 +910,8 @@ defmodule Server do
         nil
 
       [waiting_blpop_pids: waiting_blpop_pids] ->
-        [pid | rest] = waiting_blpop_pids
-        :ets.insert(@config_table, {:waiting_blpop_pids, rest})
+        # Problematic
+        [pid | _] = waiting_blpop_pids
         if Process.alive?(pid), do: BlockPop.push_element(pid, key)
     end
   end
@@ -974,10 +974,21 @@ defmodule Server do
 
   # BLPOP
   defp handle_blpop([_, key, _, timeout]) do
-    timeout = String.to_integer(timeout)
+    # Handle both int and float
+    {:ok, timeout} =
+      case Integer.parse(timeout) do
+        {int, ""} ->
+          {:ok, int}
+
+        _ ->
+          case Float.parse(timeout) do
+            {float, ""} -> {:ok, float}
+            _ -> {:error, :invalid_number}
+          end
+      end
 
     {:ok, pid} =
-      BlockPop.start_link(timeout_ms: timeout * 1000, key: key)
+      BlockPop.start_link(timeout_ms: round(timeout * 1000), key: key)
 
     case BlockPop.wait_for_push(pid) do
       {:ok, _} ->
