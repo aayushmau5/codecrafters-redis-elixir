@@ -189,6 +189,7 @@ defmodule Server do
       "keys" -> handle_key(data)
       "type" -> handle_type(data)
       "multi" -> handle_multi(data)
+      "discard" -> handle_discard(data)
       "exec" -> handle_exec(data)
       "set" -> handle_set(data)
       "incr" -> handle_incr(data)
@@ -793,19 +794,30 @@ defmodule Server do
     return_ok()
   end
 
+  # DISCARD
+  defp handle_discard(_) do
+    if Process.get(:in_transaction) do
+      Process.delete(:in_transaction)
+      Process.delete(:queued_commands)
+      return_ok()
+    else
+      "-ERR DISCARD without MULTI\r\n"
+    end
+  end
+
   # EXEC
   def handle_exec(_data) do
     case Process.get(:in_transaction) do
       true ->
         queued_commands = Process.get(:queued_commands)
         dbg(queued_commands)
-        Process.delete(:in_transaction)
 
         commands_results =
           Enum.map(Enum.reverse(queued_commands), fn {command, data} ->
             execute_command_directly(command, data)
           end)
 
+        Process.delete(:in_transaction)
         Process.delete(:queued_commands)
         "*#{length(commands_results)}\r\n" <> Enum.join(commands_results)
 
