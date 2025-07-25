@@ -195,6 +195,7 @@ defmodule Server do
       "lpush" -> handle_lpush(data)
       "rpush" -> handle_rpush(data)
       "lrange" -> handle_lrange(data)
+      "lpop" -> handle_lpop(data)
       "set" -> handle_set(data)
       "incr" -> handle_incr(data)
       "get" -> handle_get(data)
@@ -945,6 +946,49 @@ defmodule Server do
 
   defp normalize_index(idx, len) when idx < 0, do: max(len + idx, 0)
   defp normalize_index(idx, _len), do: idx
+
+  # LPOP
+  defp handle_lpop([_, key, _, num]) do
+    num = String.length(num)
+
+    case :ets.lookup(@storage_table, key) do
+      [] ->
+        "$-1\r\n"
+
+      [{^key, {value, _}}] ->
+        if is_list(value) do
+          rest = Enum.drop(value, num)
+          :ets.insert(@storage_table, {key, {rest, nil}})
+
+          elements = Enum.slice(value, 0..(num - 1))
+
+          result =
+            Enum.reduce(elements, "", fn value, acc ->
+              acc <> "$#{String.length(value)}\r\n#{value}\r\n"
+            end)
+
+          "*#{length(elements)}\r\n" <> result
+        else
+          "$-1\r\n"
+        end
+    end
+  end
+
+  defp handle_lpop([_, key]) do
+    case :ets.lookup(@storage_table, key) do
+      [] ->
+        "$-1\r\n"
+
+      [{^key, {value, _}}] ->
+        if is_list(value) do
+          [head | rest] = value
+          :ets.insert(@storage_table, {key, {rest, nil}})
+          "$#{String.length(head)}\r\n#{head}\r\n"
+        else
+          "$-1\r\n"
+        end
+    end
+  end
 
   # SET
   # ["$3", "foo", "$4", "bar"]
