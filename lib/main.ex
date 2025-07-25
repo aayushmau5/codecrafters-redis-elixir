@@ -949,7 +949,7 @@ defmodule Server do
 
   # LPOP
   defp handle_lpop([_, key, _, num]) do
-    num = String.length(num)
+    num = String.to_integer(num)
 
     case :ets.lookup(@storage_table, key) do
       [] ->
