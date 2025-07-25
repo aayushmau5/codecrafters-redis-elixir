@@ -858,25 +858,38 @@ defmodule Server do
     start_index = String.to_integer(start_index)
     end_index = String.to_integer(end_index)
 
-    if start_index > end_index do
-      "*0\r\n"
-    else
-      case :ets.lookup(@storage_table, key) do
-        [] ->
-          "*0\r\n"
+    case :ets.lookup(@storage_table, key) do
+      [] ->
+        "*0\r\n"
 
-        [{^key, {value, _}}] ->
-          if is_list(value) do
-            len = length(value)
+      [{^key, {value, _}}] ->
+        if is_list(value) do
+          len = length(value)
 
-            cond do
-              start_index > len ->
+          cond do
+            start_index > len ->
+              "*0\r\n"
+
+            end_index > len ->
+              start_index = normalize_index(start_index, len)
+              end_index = len - 1
+
+              elements = Enum.slice(value, start_index, end_index - start_index + 1)
+
+              result =
+                Enum.reduce(elements, "", fn value, acc ->
+                  acc <> "$#{String.length(value)}\r\n#{value}\r\n"
+                end)
+
+              "*#{length(elements)}\r\n" <> result
+
+            true ->
+              start_index = normalize_index(start_index, len)
+              end_index = normalize_index(end_index, len)
+
+              if start_index > end_index do
                 "*0\r\n"
-
-              end_index > len ->
-                start_index = normalize_index(start_index, len)
-                end_index = len - 1
-
+              else
                 elements = Enum.slice(value, start_index, end_index - start_index + 1)
 
                 result =
@@ -885,24 +898,11 @@ defmodule Server do
                   end)
 
                 "*#{length(elements)}\r\n" <> result
-
-              true ->
-                start_index = normalize_index(start_index, len)
-                end_index = normalize_index(end_index, len)
-
-                elements = Enum.slice(value, start_index, end_index - start_index + 1)
-
-                result =
-                  Enum.reduce(elements, "", fn value, acc ->
-                    acc <> "$#{String.length(value)}\r\n#{value}\r\n"
-                  end)
-
-                "*#{length(elements)}\r\n" <> result
-            end
-          else
-            "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+              end
           end
-      end
+        else
+          "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+        end
     end
   end
 
