@@ -191,6 +191,7 @@ defmodule Server do
       "multi" -> handle_multi(data)
       "discard" -> handle_discard(data)
       "exec" -> handle_exec(data)
+      "rpush" -> handle_rpush(data)
       "set" -> handle_set(data)
       "incr" -> handle_incr(data)
       "get" -> handle_get(data)
@@ -823,6 +824,24 @@ defmodule Server do
 
       nil ->
         "-ERR EXEC without MULTI\r\n"
+    end
+  end
+
+  # LPUSH
+  def handle_rpush([_, key, _, element]) do
+    case :ets.lookup(@storage_table, key) do
+      [] ->
+        :ets.insert(@storage_table, {key, {[element], nil}})
+        ":1\r\n"
+
+      [{^key, {value, _}}] ->
+        if is_list(value) do
+          new_list = Enum.concat(value, [element])
+          :ets.insert(@storage_table, {key, {new_list, nil}})
+          ":#{length(new_list)}\r\n"
+        else
+          "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+        end
     end
   end
 
