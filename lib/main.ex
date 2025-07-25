@@ -987,8 +987,12 @@ defmodule Server do
           end
       end
 
+    dbg("here")
+
     {:ok, pid} =
       BlockPop.start_link(timeout_ms: round(timeout * 1000), key: key)
+
+    dbg("after block pop start")
 
     case BlockPop.wait_for_push(pid) do
       {:ok, _} ->
