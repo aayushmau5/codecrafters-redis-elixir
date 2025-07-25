@@ -191,6 +191,7 @@ defmodule Server do
       "multi" -> handle_multi(data)
       "discard" -> handle_discard(data)
       "exec" -> handle_exec(data)
+      "lpush" -> handle_lpush(data)
       "rpush" -> handle_rpush(data)
       "lrange" -> handle_lrange(data)
       "set" -> handle_set(data)
@@ -829,6 +830,26 @@ defmodule Server do
   end
 
   # LPUSH
+  defp handle_lpush([_, key | elements]) do
+    elements = get_elements(elements)
+
+    case :ets.lookup(@storage_table, key) do
+      [] ->
+        :ets.insert(@storage_table, {key, {Enum.reverse(elements), nil}})
+        ":#{length(elements)}\r\n"
+
+      [{^key, {value, _}}] ->
+        if is_list(value) do
+          new_list = Enum.concat(Enum.reverse(elements), value)
+          :ets.insert(@storage_table, {key, {new_list, nil}})
+          ":#{length(new_list)}\r\n"
+        else
+          "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+        end
+    end
+  end
+
+  # RPUSH
   defp handle_rpush([_, key | elements]) do
     elements = get_elements(elements)
 
