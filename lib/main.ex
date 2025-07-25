@@ -983,7 +983,7 @@ defmodule Server do
       {:ok, _} ->
         [{^key, {value, _}}] = :ets.lookup(@storage_table, key)
         [element | rest] = value
-        :ets.insert(@config_table, {key, {rest, nil}})
+        :ets.insert(@storage_table, {key, {rest, nil}})
         "*2\r\n$#{String.length(key)}\r\n#{key}\r\n$#{String.length(element)}\r\n#{element}\r\n"
 
       {:error, :nopush} ->
