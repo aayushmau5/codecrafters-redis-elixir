@@ -974,26 +974,27 @@ defmodule Server do
 
   # BLPOP
   defp handle_blpop([_, key, _, timeout]) do
-    # Handle both int and float
-    {:ok, timeout} =
-      case Integer.parse(timeout) do
-        {int, ""} ->
-          {:ok, int}
-
-        _ ->
-          case Float.parse(timeout) do
-            {float, ""} -> {:ok, float}
-            _ -> {:error, :invalid_number}
-          end
-      end
-
     case :ets.lookup(@storage_table, key) do
       [{^key, {[element | rest], _}}] ->
+        dbg(element)
         # Item available immediately, no need to block
         :ets.insert(@storage_table, {key, {rest, nil}})
         "*2\r\n$#{String.length(key)}\r\n#{key}\r\n$#{String.length(element)}\r\n#{element}\r\n"
 
       _ ->
+        # Handle both int and float
+        {:ok, timeout} =
+          case Integer.parse(timeout) do
+            {int, ""} ->
+              {:ok, int}
+
+            _ ->
+              case Float.parse(timeout) do
+                {float, ""} -> {:ok, float}
+                _ -> {:error, :invalid_number}
+              end
+          end
+
         {:ok, pid} =
           BlockPop.start_link(timeout_ms: round(timeout * 1000), key: key)
 
