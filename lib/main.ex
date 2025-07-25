@@ -114,7 +114,12 @@ defmodule Server do
   defp loop_accept(socket) do
     case :gen_tcp.accept(socket) do
       {:ok, client} ->
-        Task.start(fn -> handle_socket(client) end)
+        Task.start(fn ->
+          five_minutes = 300_000
+          :timer.kill_after(five_minutes)
+          handle_socket(client)
+        end)
+
         loop_accept(socket)
 
       {:error, reason} ->
@@ -195,6 +200,7 @@ defmodule Server do
       "lpush" -> handle_lpush(data)
       "rpush" -> handle_rpush(data)
       "lrange" -> handle_lrange(data)
+      "blpop" -> handle_blpop(data)
       "lpop" -> handle_lpop(data)
       "set" -> handle_set(data)
       "incr" -> handle_incr(data)
@@ -853,12 +859,14 @@ defmodule Server do
     case :ets.lookup(@storage_table, key) do
       [] ->
         :ets.insert(@storage_table, {key, {Enum.reverse(elements), nil}})
+        notify_waiters(key)
         ":#{length(elements)}\r\n"
 
       [{^key, {value, _}}] ->
         if is_list(value) do
           new_list = Enum.concat(Enum.reverse(elements), value)
           :ets.insert(@storage_table, {key, {new_list, nil}})
+          notify_waiters(key)
           ":#{length(new_list)}\r\n"
         else
           "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
@@ -873,12 +881,14 @@ defmodule Server do
     case :ets.lookup(@storage_table, key) do
       [] ->
         :ets.insert(@storage_table, {key, {elements, nil}})
+        notify_waiters(key)
         ":#{length(elements)}\r\n"
 
       [{^key, {value, _}}] ->
         if is_list(value) do
           new_list = Enum.concat(value, elements)
           :ets.insert(@storage_table, {key, {new_list, nil}})
+          notify_waiters(key)
           ":#{length(new_list)}\r\n"
         else
           "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
@@ -889,6 +899,21 @@ defmodule Server do
   defp get_elements(elements) do
     Enum.chunk_every(elements, 2)
     |> Enum.map(fn [_, element] -> element end)
+  end
+
+  defp notify_waiters(key) do
+    case :ets.lookup(@config_table, :waiting_blpop_pids) do
+      [] ->
+        nil
+
+      [waiting_blpop_pids: []] ->
+        nil
+
+      [waiting_blpop_pids: waiting_blpop_pids] ->
+        [pid | rest] = waiting_blpop_pids
+        :ets.insert(@config_table, {:waiting_blpop_pids, rest})
+        if Process.alive?(pid), do: BlockPop.push_element(pid, key)
+    end
   end
 
   # LRANGE
@@ -946,6 +971,25 @@ defmodule Server do
 
   defp normalize_index(idx, len) when idx < 0, do: max(len + idx, 0)
   defp normalize_index(idx, _len), do: idx
+
+  # BLPOP
+  defp handle_blpop([_, key, _, timeout]) do
+    timeout = String.to_integer(timeout)
+
+    {:ok, pid} =
+      BlockPop.start_link(timeout_ms: timeout, key: key)
+
+    case BlockPop.wait_for_push(pid) do
+      {:ok, _} ->
+        [{^key, {value, _}}] = :ets.lookup(@storage_table, key)
+        [element | rest] = value
+        :ets.insert(@config_table, {key, {rest, nil}})
+        "*2\r\n$#{String.length(key)}\r\n#{key}\r\n$#{String.length(element)}\r\n#{element}\r\n"
+
+      {:error, :nopush} ->
+        return_nil()
+    end
+  end
 
   # LPOP
   defp handle_lpop([_, key, _, num]) do
