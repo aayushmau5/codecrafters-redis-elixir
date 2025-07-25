@@ -987,22 +987,27 @@ defmodule Server do
           end
       end
 
-    dbg("here")
-
-    {:ok, pid} =
-      BlockPop.start_link(timeout_ms: round(timeout * 1000), key: key)
-
-    dbg("after block pop start")
-
-    case BlockPop.wait_for_push(pid) do
-      {:ok, _} ->
-        [{^key, {value, _}}] = :ets.lookup(@storage_table, key)
-        [element | rest] = value
+    case :ets.lookup(@storage_table, key) do
+      [{^key, {[element | rest], _}}] ->
+        # Item available immediately, no need to block
         :ets.insert(@storage_table, {key, {rest, nil}})
         "*2\r\n$#{String.length(key)}\r\n#{key}\r\n$#{String.length(element)}\r\n#{element}\r\n"
 
-      {:error, :nopush} ->
-        return_nil()
+      _ ->
+        {:ok, pid} =
+          BlockPop.start_link(timeout_ms: round(timeout * 1000), key: key)
+
+        case BlockPop.wait_for_push(pid) do
+          {:ok, _} ->
+            [{^key, {value, _}}] = :ets.lookup(@storage_table, key)
+            [element | rest] = value
+            :ets.insert(@storage_table, {key, {rest, nil}})
+
+            "*2\r\n$#{String.length(key)}\r\n#{key}\r\n$#{String.length(element)}\r\n#{element}\r\n"
+
+          {:error, :nopush} ->
+            return_nil()
+        end
     end
   end
 
