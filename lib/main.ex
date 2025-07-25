@@ -172,25 +172,30 @@ defmodule Server do
       "+QUEUED\r\n"
     else
       # Non-transaction, handle commands(in request-response manner)
-      case command do
-        "xadd" -> handle_xadd(data)
-        "xrange" -> handle_xrange(data)
-        "xread" -> handle_xread(data)
-        "replconf" -> handle_repl_conf(data)
-        "psync" -> handle_psync(data)
-        "info" -> handle_info(data)
-        "wait" -> handle_wait(data)
-        "config" -> handle_config(data)
-        "keys" -> handle_key(data)
-        "type" -> handle_type(data)
-        "multi" -> handle_multi(data)
-        "exec" -> handle_exec(data)
-        "set" -> handle_set(data)
-        "incr" -> handle_incr(data)
-        "get" -> handle_get(data)
-        "echo" -> handle_echo(data)
-        "ping" -> handle_ping(data)
-      end
+      execute_command_directly(command, data)
+    end
+  end
+
+  defp execute_command_directly(command, data) do
+    case command do
+      "xadd" -> handle_xadd(data)
+      "xrange" -> handle_xrange(data)
+      "xread" -> handle_xread(data)
+      "replconf" -> handle_repl_conf(data)
+      "psync" -> handle_psync(data)
+      "info" -> handle_info(data)
+      "wait" -> handle_wait(data)
+      "config" -> handle_config(data)
+      "keys" -> handle_key(data)
+      "type" -> handle_type(data)
+      "multi" -> handle_multi(data)
+      "exec" -> handle_exec(data)
+      "set" -> handle_set(data)
+      "incr" -> handle_incr(data)
+      "get" -> handle_get(data)
+      "echo" -> handle_echo(data)
+      "ping" -> handle_ping(data)
+      "command" -> return_ok()
     end
   end
 
@@ -792,11 +797,17 @@ defmodule Server do
   def handle_exec(_data) do
     case Process.get(:in_transaction) do
       true ->
-        # queued_commands = Process.get(:queued_commands)
-        # dbg(queued_commands)
+        queued_commands = Process.get(:queued_commands)
+        dbg(queued_commands)
         Process.delete(:in_transaction)
+
+        commands_results =
+          Enum.map(Enum.reverse(queued_commands), fn {command, data} ->
+            execute_command_directly(command, data)
+          end)
+
         Process.delete(:queued_commands)
-        "*0\r\n"
+        "*#{length(commands_results)}\r\n" <> Enum.join(commands_results)
 
       nil ->
         "-ERR EXEC without MULTI\r\n"
