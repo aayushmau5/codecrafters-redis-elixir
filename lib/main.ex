@@ -191,6 +191,7 @@ defmodule Server do
       "multi" -> handle_multi(data)
       "discard" -> handle_discard(data)
       "exec" -> handle_exec(data)
+      "llen" -> handle_llen(data)
       "lpush" -> handle_lpush(data)
       "rpush" -> handle_rpush(data)
       "lrange" -> handle_lrange(data)
@@ -826,6 +827,21 @@ defmodule Server do
 
       nil ->
         "-ERR EXEC without MULTI\r\n"
+    end
+  end
+
+  # LLEN
+  defp handle_llen([_, key]) do
+    case :ets.lookup(@storage_table, key) do
+      [] ->
+        ":0\r\n"
+
+      [{^key, {value, _}}] ->
+        if is_list(value) do
+          ":#{length(value)}\r\n"
+        else
+          ":0\r\n"
+        end
     end
   end
 
