@@ -977,7 +977,7 @@ defmodule Server do
     timeout = String.to_integer(timeout)
 
     {:ok, pid} =
-      BlockPop.start_link(timeout_ms: timeout, key: key)
+      BlockPop.start_link(timeout_ms: timeout * 1000, key: key)
 
     case BlockPop.wait_for_push(pid) do
       {:ok, _} ->
