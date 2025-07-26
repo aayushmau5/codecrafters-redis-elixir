@@ -5,7 +5,6 @@ defmodule Commands.Push do
     case Storage.get_stored(key) do
       nil ->
         Storage.add_to_store({key, {Enum.reverse(elements), nil}})
-
         notify_waiters(key)
         ":#{length(elements)}\r\n"
 
@@ -28,7 +27,7 @@ defmodule Commands.Push do
       nil ->
         Storage.add_to_store({key, {elements, nil}})
         dbg("notifying waiters")
-        notify_waiters(key) |> dbg()
+        notify_waiters(key)
         ":#{length(elements)}\r\n"
 
       {value, _} ->
@@ -36,7 +35,7 @@ defmodule Commands.Push do
           new_list = Enum.concat(value, elements)
           Storage.add_to_store({key, {new_list, nil}})
           dbg("notifying waiters")
-          notify_waiters(key) |> dbg()
+          notify_waiters(key)
           ":#{length(new_list)}\r\n"
         else
           "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
@@ -45,13 +44,6 @@ defmodule Commands.Push do
   end
 
   defp notify_waiters(key) do
-    case Storage.get_config(:waiting_blpop_pids) do
-      match when match in [nil, []] ->
-        nil
-
-      waiting_blpop_pids ->
-        [pid | _] = waiting_blpop_pids
-        if Process.alive?(pid), do: BlockPop.push_element(pid, key)
-    end
+    BlockPop.notify_push(key)
   end
 end

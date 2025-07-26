@@ -43,7 +43,12 @@ defmodule Server do
       Storage.add_config({:master_repl_offset, master_repl_offset})
     end
 
-    Supervisor.start_link([{Task, fn -> Server.listen() end}], strategy: :one_for_one)
+    children = [
+      {Task, fn -> Server.listen() end},
+      {BlockPop, []}
+    ]
+
+    Supervisor.start_link(children, strategy: :one_for_one)
   end
 
   @doc """

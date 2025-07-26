@@ -1,94 +1,98 @@
 defmodule BlockPop do
   use GenServer
 
-  @config_table :config
-
-  def start_link(args) do
-    GenServer.start_link(__MODULE__, args)
+  def start_link(_args) do
+    GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
   end
 
-  def wait_for_push(pid) do
-    GenServer.call(pid, :block, :infinity)
-  end
+  def wait_for_element(key, timeout_ms) do
+    case try_pop_element(key) do
+      {:ok, response} ->
+        {:ok, response}
 
-  def push_element(pid, key) do
-    GenServer.cast(pid, {:push, key})
-  end
-
-  @impl true
-  def init(args) do
-    timeout_ms = Keyword.get(args, :timeout_ms)
-    required_key = Keyword.get(args, :key)
-
-    case Storage.get_config(:waiting_blpop_pids) do
-      nil ->
-        Storage.add_config({:waiting_blpop_pids, [self()]})
-
-      waiting_blpop_pids ->
-        Storage.add_config({:waiting_blpop_pids, waiting_blpop_pids ++ [self()]})
+      :empty ->
+        GenServer.call(__MODULE__, {:wait, key, timeout_ms}, :infinity)
     end
+  end
 
-    {:ok,
-     %{
-       timeout_ms: timeout_ms,
-       required_key: required_key,
-       timer_ref: nil,
-       caller: nil
-     }}
+  def notify_push(key) do
+    GenServer.cast(__MODULE__, {:push, key})
+  end
+
+  defp try_pop_element(key) do
+    case Storage.get_stored(key) do
+      match when match in [nil, {[], nil}] ->
+        :empty
+
+      {[element | rest], _} ->
+        Storage.add_to_store({key, {rest, nil}})
+        # encode_array()
+        response =
+          "*2\r\n$#{String.length(key)}\r\n#{key}\r\n$#{String.length(element)}\r\n#{element}\r\n"
+
+        {:ok, response}
+    end
   end
 
   @impl true
-  def handle_call(:block, from, %{timeout_ms: timeout_ms} = state) do
+  def init(_) do
+    {:ok, %{waiting: %{}}}
+  end
+
+  @impl true
+  def handle_call({:wait, key, timeout_ms}, from, state) do
     dbg("Block for push")
+    waiters = Map.get(state.waiting, key, [])
+    new_waiters = waiters ++ [from]
+    new_state = %{state | waiting: Map.put(state.waiting, key, new_waiters)}
 
-    timer_ref =
-      if timeout_ms != 0, do: Process.send_after(self(), :timeout, timeout_ms), else: nil
+    if timeout_ms > 0, do: Process.send_after(self(), {:timeout, key, from}, timeout_ms)
 
-    {:noreply, %{state | timer_ref: timer_ref, caller: from}}
+    {:noreply, new_state}
   end
 
   @impl true
-  def handle_cast({:push, key}, %{caller: caller, timer_ref: timer_ref} = state) do
-    dbg("Got push for #{key}")
+  def handle_cast({:push, key}, state) do
+    case Map.get(state.waiting, key, []) do
+      [] ->
+        {:noreply, state}
 
-    if state.required_key == key do
-      # Remove from waiting list when we're done
-      case Storage.get_config(:waiting_blpop_pids) do
-        nil ->
-          :ok
+      [first_waiter | rest_waiters] ->
+        case try_pop_element(key) do
+          {:ok, response} ->
+            GenServer.reply(first_waiter, {:ok, response})
 
-        pids ->
-          updated_pids = List.delete(pids, self()) |> dbg()
-          Storage.add_config({:waiting_blpop_pids, updated_pids})
-      end
+            new_waiting =
+              if rest_waiters == [] do
+                Map.delete(state.waiting, key)
+              else
+                Map.put(state.waiting, key, rest_waiters)
+              end
 
-      if timer_ref, do: Process.cancel_timer(timer_ref)
-      if caller, do: GenServer.reply(caller, {:ok, key})
+            {:noreply, %{state | waiting: new_waiting}}
 
-      {:noreply, %{state | caller: nil, timer_ref: nil}}
-    else
-      {:noreply, state}
+          :empty ->
+            {:noreply, state}
+        end
     end
   end
 
   @impl true
-  def handle_info(:timeout, %{caller: caller} = state) do
+  def handle_info({:timeout, key, from}, state) do
     dbg("timed out")
 
-    if caller do
-      GenServer.reply(caller, {:error, :nopush})
+    waiters = Map.get(state.waiting, key, [])
 
-      # Remove from waiting list on timeout
-      case :ets.lookup(@config_table, :waiting_blpop_pids) do
-        [waiting_blpop_pids: pids] ->
-          updated_pids = List.delete(pids, self())
-          Storage.add_config({:waiting_blpop_pids, updated_pids})
+    new_waiters = List.delete(waiters, from)
 
-        [] ->
-          :ok
+    new_waiting =
+      if new_waiters == [] do
+        Map.delete(state.waiting, key)
+      else
+        Map.put(state.waiting, key, new_waiters)
       end
-    end
 
-    {:noreply, %{state | caller: nil, timer_ref: nil}}
+    GenServer.reply(from, {:error, :timeout})
+    {:noreply, %{state | waiting: new_waiting}}
   end
 end
