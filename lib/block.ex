@@ -1,8 +1,6 @@
 defmodule Block do
   use GenServer
 
-  @config_table :config
-
   def start_link(args) do
     GenServer.start_link(__MODULE__, args)
   end
@@ -20,7 +18,7 @@ defmodule Block do
     timeout_ms = Keyword.get(args, :timeout_ms)
     required_stream_key = Keyword.get(args, :stream_key)
     required_id = Keyword.get(args, :id)
-    :ets.insert(@config_table, {:current_block_pid, self()}) |> dbg()
+    Storage.add_config({:current_block_pid, self()})
 
     {:ok,
      %{
@@ -39,8 +37,6 @@ defmodule Block do
     timer_ref =
       if timeout_ms != 0, do: Process.send_after(self(), :timeout, timeout_ms), else: nil
 
-    dbg(timer_ref)
-
     {:noreply, %{state | timer_ref: timer_ref, caller: from}}
   end
 
@@ -49,8 +45,8 @@ defmodule Block do
     dbg(state.required_id)
 
     if state.required_id != nil do
-      {required_ms, required_offset} = id_to_tuple(state.required_id)
-      {ms, offset} = id_to_tuple(id)
+      {required_ms, required_offset} = Utils.id_to_tuple(state.required_id)
+      {ms, offset} = Utils.id_to_tuple(id)
 
       dbg({ms, required_ms, offset, required_offset})
 
@@ -89,12 +85,5 @@ defmodule Block do
     end
 
     {:noreply, %{state | caller: nil, timer_ref: nil}}
-  end
-
-  defp id_to_tuple(id) when is_binary(id) do
-    String.split(id, "-")
-    |> then(fn [last_ms, last_offset] ->
-      {String.to_integer(last_ms), String.to_integer(last_offset)}
-    end)
   end
 end

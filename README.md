@@ -1,6 +1,6 @@
 # Codecrafters Redis Elixir
 
-My take at doing ["build your own redis"]() in elixir through [codecrafters]().
+My take at doing ["build your own redis"](https://app.codecrafters.io/courses/redis/overview) in elixir through [codecrafters](https://codecrafters.io/).
 
 ## Brainstorm
 

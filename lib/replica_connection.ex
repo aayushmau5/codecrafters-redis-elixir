@@ -115,8 +115,8 @@ defmodule ReplicaConnection do
     commands = Utils.separate_commands(data, []) |> dbg()
 
     Enum.each(commands, fn command_body ->
-      command_binary = Server.reconstruct_binary_command(command_body)
-      {command, rest} = Server.get_command(command_body)
+      command_binary = Commands.reconstruct_binary_command(command_body)
+      {command, rest} = Commands.get_command(command_body)
 
       dbg("HANDLING IN REPLICA connection #{inspect(client)} #{command_binary}")
 

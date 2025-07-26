@@ -22,4 +22,29 @@ defmodule Utils do
         separate_commands(rest, commands)
     end
   end
+
+  # ID
+  def id_to_tuple(id) when is_binary(id) do
+    String.split(id, "-")
+    |> then(fn [last_ms, last_offset] ->
+      {String.to_integer(last_ms), String.to_integer(last_offset)}
+    end)
+  end
+
+  # Common responses
+  def return_nil(), do: "$-1\r\n"
+  def return_ok(), do: "+OK\r\n"
+
+  # Replica
+  def master?(), do: !replica?()
+
+  def replica?() do
+    Storage.get_config(:is_replica)
+  end
+
+  # List
+  def get_list_elements(elements) do
+    Enum.chunk_every(elements, 2)
+    |> Enum.map(fn [_, element] -> element end)
+  end
 end
