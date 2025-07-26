@@ -27,14 +27,16 @@ defmodule Commands.Push do
     case Storage.get_stored(key) do
       nil ->
         Storage.add_to_store({key, {elements, nil}})
-        notify_waiters(key)
+        dbg("notifying waiters")
+        notify_waiters(key) |> dbg()
         ":#{length(elements)}\r\n"
 
       {value, _} ->
         if is_list(value) do
           new_list = Enum.concat(value, elements)
           Storage.add_to_store({key, {new_list, nil}})
-          notify_waiters(key)
+          dbg("notifying waiters")
+          notify_waiters(key) |> dbg()
           ":#{length(new_list)}\r\n"
         else
           "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
@@ -44,10 +46,7 @@ defmodule Commands.Push do
 
   defp notify_waiters(key) do
     case Storage.get_config(:waiting_blpop_pids) do
-      nil ->
-        nil
-
-      [] ->
+      match when match in [nil, []] ->
         nil
 
       waiting_blpop_pids ->
