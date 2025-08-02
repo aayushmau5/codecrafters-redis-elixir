@@ -25,6 +25,7 @@ defmodule Commands do
       "get" -> Commands.Get.handle_get(data)
       "echo" -> Commands.Echo.handle_echo(data)
       "ping" -> Commands.Ping.handle_ping(data)
+      "subscribe" -> Commands.Subscribe.handle_subscribe(data)
       "command" -> Utils.return_ok()
     end
   end
